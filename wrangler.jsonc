@@ -41,7 +41,7 @@
   "migrations": [
     {
       "tag": "v1",
-      "new_classes": ["AdminCsrf"]
+      "new_sqlite_classes": ["AdminCsrf"]
     }
   ],
   "vars": {

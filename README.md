@@ -96,7 +96,7 @@ Workers Free 的 10 ms CPU 和 50 次 subrequest 限额不符合本项目的 PBK
 
 通过 GitHub 提交该配置修改到 `main`。不要将主密钥、账号密码或账号导出文件提交到 GitHub。
 
-`wrangler.jsonc` 同时声明了 `ADMIN_CSRF` Durable Object 及其首次 migration。Workers Builds 执行 `npx wrangler deploy` 时会自动应用该 migration；不要删除或手动修改已有 migration tag。
+`wrangler.jsonc` 同时声明了 `ADMIN_CSRF` SQLite Durable Object 及其首次 migration。Workers Builds 执行 `npx wrangler deploy` 时会自动应用该 migration；Free 计划必须使用 `new_sqlite_classes`，不要删除或手动修改已有 migration tag。
 
 ### 4．导入 GitHub 仓库并创建 Worker
 
