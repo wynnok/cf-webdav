@@ -1,5 +1,6 @@
 node_modules/
 .wrangler/
+.opencode/
 .dev.vars
 dist/
 coverage/
