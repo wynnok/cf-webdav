@@ -57,3 +57,67 @@ _Avoid_: 冻结、封号
 **重新包装 (Rewrap)**:
 用新主密钥重新加密全部数据密钥的动作,不触碰任何加密对象数据;用于主密钥轮换。
 _Avoid_: 密钥轮换(单指数据密钥时)、重加密
+
+**管理面 (Management surface)**:
+由 Worker 提供的正式管理员界面,用于查看备份元数据和管理账号;不提供备份内容下载、解密、编辑或删除。
+_Avoid_: 文件管理器、云盘
+
+**管理员凭据 (Administrator credentials)**:
+通过 Worker Secret 配置的一组管理员用户名和密码,只用于管理面登录,不与任何 WebDAV 账号共享。
+_Avoid_: WebDAV 凭据、账号凭据
+
+**管理员会话 (Administrator session)**:
+管理面表单登录成功后签发的短期、签名 Cookie 会话。
+_Avoid_: WebDAV 会话、Basic Auth 缓存
+
+**备份元数据 (Backup metadata)**:
+管理面可显示但不修改的备份对象信息:账号、路径、明文大小、时间和 ETag;不包含备份内容。
+_Avoid_: 备份内容、文件预览
+
+**账号移除 (Account removal)**:
+危险且不可逆的管理动作:删除账号记录及该账号 R2 前缀下的全部备份对象。
+_Avoid_: 账号停用、密码重置
+
+**管理路由 (Management route)**:
+管理面固定使用 `/admin` 前缀;WebDAV 保持根路径 `/`,以避免改变既有备份客户端 URL。
+_Avoid_: 管理子域名、WebDAV 子路径
+
+**跨站请求伪造令牌 (CSRF token)**:
+管理面每个写操作表单携带的一次性随机令牌;服务端同时校验令牌和同源 Origin,以阻止第三方站点伪造管理请求。
+_Avoid_: 会话 Cookie、管理员凭据
+
+**密码重置 (Password reset)**:
+管理员为既有账号设置新密码的动作;只更新密码哈希与盐,保留账号数据密钥和全部备份对象。
+_Avoid_: 账号移除、重新包装
+
+**账号移除任务 (Account removal job)**:
+可恢复的异步批处理任务:先停用目标账号,分批删除其 R2 前缀下的加密对象,全部完成后删除账号记录。
+_Avoid_: 账号停用、同步删除
+
+**管理会话上限 (Administrator session limit)**:
+管理员会话 Cookie 在浏览器关闭时失效,且签名载荷强制最多存活四小时。
+_Avoid_: 永久登录、WebDAV 认证缓存
+
+**账号移除暂停 (Account removal pause)**:
+停止账号移除任务的后续批处理,保留已删除的数据和当前游标;不是取消或回滚。
+_Avoid_: 取消、恢复
+
+**管理状态存储 (Management state store / ADMIN_KV)**:
+与账号记录 KV 隔离的 KV 命名空间,保存管理员会话、一次性 CSRF 令牌及账号移除任务状态。
+_Avoid_: ACCOUNTS_KV、通用缓存
+
+**管理 CSRF 协调器 (Management CSRF coordinator / ADMIN_CSRF)**:
+专用 Durable Object,原子消费管理员会话关联的一次性 CSRF 令牌,并在账号移除期间阻止新的 WebDAV 写操作、等待既有写操作结束;同时原子领取每分钟唯一的账号移除批次。令牌数据仍由 ADMIN_KV 设置过期。
+_Avoid_: WebDAV 锁、尽力而为的 KV 删除、并发移除批次
+
+**账号移除失败 (Account removal failure)**:
+账号移除任务中单个对象删除连续失败三次后停止的状态;保留失败对象和错误摘要,等待管理员处理。
+_Avoid_: 自动忽略、无限重试
+
+**账号移除记录保留期 (Account removal record retention)**:
+完成或失败的账号移除任务仅保留摘要、计数和错误信息 30 天,之后由定时任务清理。
+_Avoid_: 永久审计日志、备份保留期
+
+**移除中账号限制 (Account-removal account restriction)**:
+账号移除任务运行或暂停时,禁止对该账号执行启用、停用或密码重置,以避免与不可逆删除过程冲突。
+_Avoid_: 并行账号管理

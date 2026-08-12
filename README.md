@@ -2,7 +2,7 @@
 
 `cf-webdav` 是一个运行在 **Cloudflare Workers** 上的加密 WebDAV 服务。它以 Cloudflare R2 为存储后端，供 rclone、Duplicati 等备份客户端写入和恢复数据。
 
-> 这是 Cloudflare **Workers** 项目，不是 Cloudflare Pages 项目。项目不提供网页管理界面，也不要使用 `wrangler pages deploy`。
+> 这是 Cloudflare **Workers** 项目，不是 Cloudflare Pages 项目。WebDAV 位于根路径 `/`，管理员界面位于 `/admin`；不要使用 `wrangler pages deploy`。
 
 ## 特性
 
@@ -23,6 +23,8 @@ WebDAV 备份客户端
 Cloudflare Worker
         ├── ACCOUNTS_KV：账号记录、密码哈希、被包装的数据密钥
         ├── LOCKS_KV：临时 WebDAV 锁
+        ├── ADMIN_KV：管理员会话、CSRF 令牌、账号移除任务
+        ├── ADMIN_CSRF Durable Object：原子消费 CSRF 令牌、协调移除与写入
         └── R2 Bucket：WDV2 加密对象
 ```
 
@@ -66,14 +68,16 @@ Workers Free 的 10 ms CPU 和 50 次 subrequest 限额不符合本项目的 PBK
 
 ### 2．创建 KV Namespace
 
-在 **Workers & Pages → KV** 中创建以下四个 Namespace：
+在 **Workers & Pages → KV** 中创建以下六个 Namespace：
 
 | 用途 | Namespace 名称 |
 | --- | --- |
 | 生产账号记录 | `ACCOUNTS_KV` |
 | 生产锁 | `LOCKS_KV` |
+| 生产管理状态 | `ADMIN_KV` |
 | 预览账号记录 | `ACCOUNTS_KV_PREVIEW` |
 | 预览锁 | `LOCKS_KV_PREVIEW` |
+| 预览管理状态 | `ADMIN_KV_PREVIEW` |
 
 打开每个 Namespace 的详情页，复制其 Namespace ID。
 
@@ -87,6 +91,8 @@ Workers Free 的 10 ms CPU 和 50 次 subrequest 限额不符合本项目的 PBK
 | `ACCOUNTS_KV.preview_id` | `ACCOUNTS_KV_PREVIEW` 的 ID |
 | `LOCKS_KV.id` | `LOCKS_KV` 的生产 ID |
 | `LOCKS_KV.preview_id` | `LOCKS_KV_PREVIEW` 的 ID |
+| `ADMIN_KV.id` | `ADMIN_KV` 的生产 ID |
+| `ADMIN_KV.preview_id` | `ADMIN_KV_PREVIEW` 的 ID |
 
 同时确认 R2 Bucket 名称与实际创建的名称一致：
 
@@ -147,11 +153,14 @@ Workers & Pages → cf-webdav → Settings → Variables and Secrets
 | Business | `209715200`（200 MiB） |
 | Enterprise | `524288000`（500 MiB） |
 
-然后新增一个 **Secret**：
+然后新增以下 **Secret**：
 
 | 名称 | 值 |
 | --- | --- |
 | `MASTER_KEY` | 32 字节、64 位 hex 随机密钥 |
+| `ADMIN_USERNAME` | 管理员登录用户名 |
+| `ADMIN_PASSWORD` | 管理员登录密码 |
+| `ADMIN_SESSION_SECRET` | 用于签名管理员 Cookie 的高强度随机值 |
 
 在可信设备的本地终端生成密钥：
 
@@ -165,7 +174,15 @@ openssl rand -hex 32
 
 保存变量后，点击 **Deploy** 或触发一次新的 GitHub 部署。
 
+`/admin` 缺少任一管理员 Secret 时会返回 `503`。管理员会话在浏览器关闭后失效，且最长四小时；所有管理写操作均要求同源请求和由 `ADMIN_CSRF` Durable Object 原子消费的一次性 CSRF 令牌。`wrangler.jsonc` 已配置每分钟 Cron，用于继续账号移除任务及清理 30 天前的已完成或失败任务摘要。
+
 ### 6．创建第一个 WebDAV 账号
+
+推荐打开 `https://YOUR_WORKER.workers.dev/admin`，使用 `ADMIN_USERNAME` 与 `ADMIN_PASSWORD` 登录后创建账号。管理面还可只读查看备份元数据、停用或启用账号、重设密码，并发起可暂停或继续的账号移除任务。
+
+账号移除会立即停用账号，并由每分钟 Cron 分批删除其 R2 前缀下的对象；此过程不可取消或回滚。不要在该账号仍有需要保留的备份时执行移除。
+
+也可以按以下方式手动创建账号记录：
 
 账号记录需要由项目脚本使用与你设置到 Worker 中相同的 `MASTER_KEY` 生成。此步骤只需要本机安装 Node.js，不需要本机安装或登录 Cloudflare Wrangler。
 

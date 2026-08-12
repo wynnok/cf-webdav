@@ -1,4 +1,5 @@
 import { Auth } from "./auth";
+import { acquireAccountMutation, Admin, releaseAccountMutation } from "./admin";
 import { importKeyFromBytes } from "./crypto";
 import { hexToBytes } from "./util";
 import { DavRouter } from "./dav";
@@ -13,6 +14,10 @@ export default {
       const masterKeyBytes = hexToBytes(env.MASTER_KEY);
       if (masterKeyBytes.length !== 32) throw new Error("MASTER_KEY 必须是 32 字节");
       const masterKey = await importKeyFromBytes(masterKeyBytes);
+      const path = new URL(request.url).pathname;
+      if (path === "/admin" || path.startsWith("/admin/")) {
+        return new Admin(env, masterKey).dispatch(request);
+      }
 
       const auth = new Auth(
         env.ACCOUNTS_KV,
@@ -52,7 +57,20 @@ export default {
         maxPutBytes,
       });
 
-      const response = await router.dispatch(request);
+      const mutating = new Set(["PUT", "MKCOL", "DELETE", "COPY", "MOVE", "PROPPATCH", "LOCK", "UNLOCK"]);
+      const guarded = mutating.has(request.method);
+      const lease = guarded ? await acquireAccountMutation(env, user.userId) : null;
+      if (guarded && !lease) {
+        const response = new Response("Locked", { status: 423, headers: { "Cache-Control": "no-store" } });
+        audit(request, response.status, account);
+        return response;
+      }
+      let response: Response;
+      try {
+        response = await router.dispatch(request);
+      } finally {
+        if (lease) await releaseAccountMutation(env, user.userId, lease);
+      }
       audit(request, response.status, account);
       return response;
     } catch (e) {
@@ -67,7 +85,14 @@ export default {
       return response;
     }
   },
+  async scheduled(_event: ScheduledEvent, env: Env): Promise<void> {
+    const masterKeyBytes = hexToBytes(env.MASTER_KEY);
+    if (masterKeyBytes.length !== 32) throw new Error("MASTER_KEY 必须是 32 字节");
+    await new Admin(env, await importKeyFromBytes(masterKeyBytes)).runScheduled();
+  },
 };
+
+export { AdminCsrf } from "./admin";
 
 function audit(request: Request, status: number, account?: string): void {
   console.log(JSON.stringify({

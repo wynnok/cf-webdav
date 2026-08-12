@@ -24,6 +24,28 @@
       "binding": "LOCKS_KV",
       "id": "REPLACE_WITH_LOCKS_KV_ID",
       "preview_id": "REPLACE_WITH_LOCKS_KV_PREVIEW_ID"
+    },
+    {
+      "binding": "ADMIN_KV",
+      "id": "REPLACE_WITH_ADMIN_KV_ID",
+      "preview_id": "REPLACE_WITH_ADMIN_KV_PREVIEW_ID"
+    }
+  ],
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "ADMIN_CSRF",
+        "class_name": "AdminCsrf"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_classes": ["AdminCsrf"]
     }
   ],
   "vars": {
