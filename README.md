@@ -58,27 +58,23 @@ Workers Free 的 10 ms CPU 和 50 次 subrequest 限额不符合本项目的 PBK
 
 ### 1．创建 R2 Bucket
 
-在 Cloudflare Dashboard 中进入 **R2 Object Storage**，依次创建以下两个私有 Bucket：
+在 Cloudflare Dashboard 中进入 **R2 Object Storage**，创建一个私有 Bucket：
 
 | 用途 | Bucket 名称 |
 | --- | --- |
-| 生产数据 | `cf-webdav-backup` |
-| 预览数据 | `cf-webdav-backup-preview` |
+| 生产数据 | `cf-webdav-r2` |
 
 可按主要访问地区选择 Location Hint，例如亚太选择 `APAC`。不要开启公开访问，也不要开启对象版本化。
 
 ### 2．创建 KV Namespace
 
-在 **Workers & Pages → KV** 中创建以下六个 Namespace：
+在 **Workers & Pages → KV** 中创建以下三个 Namespace：
 
 | 用途 | Namespace 名称 |
 | --- | --- |
-| 生产账号记录 | `ACCOUNTS_KV` |
-| 生产锁 | `LOCKS_KV` |
-| 生产管理状态 | `ADMIN_KV` |
-| 预览账号记录 | `ACCOUNTS_KV_PREVIEW` |
-| 预览锁 | `LOCKS_KV_PREVIEW` |
-| 预览管理状态 | `ADMIN_KV_PREVIEW` |
+| 账号记录 | `cf-webdav-accounts-kv` |
+| WebDAV 锁 | `cf-webdav-locks-kv` |
+| 管理状态 | `cf-webdav-admin-kv` |
 
 打开每个 Namespace 的详情页，复制其 Namespace ID。
 
@@ -88,18 +84,14 @@ Workers Free 的 10 ms CPU 和 50 次 subrequest 限额不符合本项目的 PBK
 
 | 配置字段 | 填写内容 |
 | --- | --- |
-| `ACCOUNTS_KV.id` | `ACCOUNTS_KV` 的生产 ID |
-| `ACCOUNTS_KV.preview_id` | `ACCOUNTS_KV_PREVIEW` 的 ID |
-| `LOCKS_KV.id` | `LOCKS_KV` 的生产 ID |
-| `LOCKS_KV.preview_id` | `LOCKS_KV_PREVIEW` 的 ID |
-| `ADMIN_KV.id` | `ADMIN_KV` 的生产 ID |
-| `ADMIN_KV.preview_id` | `ADMIN_KV_PREVIEW` 的 ID |
+| `ACCOUNTS_KV.id` | `cf-webdav-accounts-kv` 的 ID：`b46bf22fe2b042cd899593052e0da7b0` |
+| `LOCKS_KV.id` | `cf-webdav-locks-kv` 的 ID：`565759437af24a679af98a656e98a799` |
+| `ADMIN_KV.id` | `cf-webdav-admin-kv` 的 ID：`074a6dee1be849b994fcd3d150105d7c` |
 
-同时确认 R2 Bucket 名称与实际创建的名称一致：
+当前仓库已配置生产 Bucket `cf-webdav-r2`：
 
 ```jsonc
-"bucket_name": "cf-webdav-backup",
-"preview_bucket_name": "cf-webdav-backup-preview"
+"bucket_name": "cf-webdav-r2"
 ```
 
 通过 GitHub 提交该配置修改到 `main`。不要将主密钥、账号密码或账号导出文件提交到 GitHub。

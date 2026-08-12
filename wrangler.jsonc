@@ -10,25 +10,21 @@
   "r2_buckets": [
     {
       "binding": "BACKUP_BUCKET",
-      "bucket_name": "cf-webdav-backup",
-      "preview_bucket_name": "cf-webdav-backup-preview"
+      "bucket_name": "cf-webdav-r2"
     }
   ],
   "kv_namespaces": [
     {
       "binding": "ACCOUNTS_KV",
-      "id": "REPLACE_WITH_ACCOUNTS_KV_ID",
-      "preview_id": "REPLACE_WITH_ACCOUNTS_KV_PREVIEW_ID"
+      "id": "b46bf22fe2b042cd899593052e0da7b0"
     },
     {
       "binding": "LOCKS_KV",
-      "id": "REPLACE_WITH_LOCKS_KV_ID",
-      "preview_id": "REPLACE_WITH_LOCKS_KV_PREVIEW_ID"
+      "id": "565759437af24a679af98a656e98a799"
     },
     {
       "binding": "ADMIN_KV",
-      "id": "REPLACE_WITH_ADMIN_KV_ID",
-      "preview_id": "REPLACE_WITH_ADMIN_KV_PREVIEW_ID"
+      "id": "074a6dee1be849b994fcd3d150105d7c"
     }
   ],
   "triggers": {
