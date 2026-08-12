@@ -3,7 +3,7 @@ import { env, SELF } from "cloudflare:test";
 import { Admin } from "../src/admin";
 import { validPbkdf2Iterations } from "../src/auth";
 import { importKeyFromBytes } from "../src/crypto";
-import { seedUser } from "./helpers";
+import { basicAuth, seedUser } from "./helpers";
 
 async function login(): Promise<{ cookie: string; csrf: string }> {
   const res = await SELF.fetch("https://dav.example.com/admin/login", { method: "POST", redirect: "manual", headers: { Origin: "https://dav.example.com", "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ username: env.ADMIN_USERNAME, password: env.ADMIN_PASSWORD }) });
@@ -37,9 +37,24 @@ describe("管理面", () => {
     const { cookie, csrf } = await login();
     const created = await SELF.fetch("https://dav.example.com/admin/accounts", form(cookie, csrf, { account: "managed", password: "new-password", passwordConfirmation: "new-password" }));
     expect(created.status).toBe(303);
-    expect(JSON.parse((await env.ACCOUNTS_KV.get("users/managed"))!).disabled).not.toBe(true);
+    expect(created.headers.get("Location")).toBe("/admin?created=managed");
+    const record = JSON.parse((await env.ACCOUNTS_KV.get("users/managed"))!);
+    expect(record.disabled).not.toBe(true);
+    expect(record.storagePrefix).toMatch(/^accounts\/[0-9a-f-]+\/$/);
+    expect((await SELF.fetch("https://dav.example.com/new.txt", { method: "PUT", headers: { Authorization: basicAuth("managed", "new-password"), "Content-Length": "5" }, body: "hello" })).status).toBe(201);
+    expect((await env.BACKUP_BUCKET.list({ prefix: record.storagePrefix })).objects).toHaveLength(1);
     const reused = await SELF.fetch("https://dav.example.com/admin/accounts", form(cookie, csrf, { account: "second", password: "new-password", passwordConfirmation: "new-password" }));
     expect(reused.status).toBe(403);
+  });
+
+  it("概览页不读取账号元数据，只有选择账号时才显示", async () => {
+    const user = await seedUser("on-demand", "correct-horse-battery-staple");
+    await env.BACKUP_BUCKET.put(`${user.prefix}private.txt`, "encrypted-value", { customMetadata: { wdv_type: "file", wdv_size: "42" } });
+    const { cookie } = await login();
+    const overview = await (await SELF.fetch("https://dav.example.com/admin", { headers: { Cookie: cookie } })).text();
+    expect(overview).not.toContain("private.txt");
+    const detail = await (await SELF.fetch("https://dav.example.com/admin?account=on-demand", { headers: { Cookie: cookie } })).text();
+    expect(detail).toContain("private.txt");
   });
 
   it("拒绝超过 Workers 支持上限的 PBKDF2 配置", () => {

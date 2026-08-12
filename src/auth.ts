@@ -16,6 +16,8 @@ export interface UserRecord {
   hash: string;
   keyWrapped: string;
   created: string;
+  /** R2 对象命名空间；未设置的旧账号使用 legacy `u/<id>/`。 */
+  storagePrefix?: string;
   disabled?: boolean;
 }
 
@@ -129,7 +131,7 @@ export class Auth {
     return {
       userId: record.id,
       username,
-      prefix: `u/${record.id}/`,
+      prefix: record.storagePrefix ?? `u/${record.id}/`,
       dataKey,
     };
   }
@@ -159,6 +161,7 @@ export function makeUserRecord(
     hash,
     keyWrapped,
     created: new Date().toISOString(),
+    storagePrefix: `accounts/${id}/`,
   };
 }
 

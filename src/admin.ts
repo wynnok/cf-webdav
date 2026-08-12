@@ -13,6 +13,7 @@ interface Session { id: string; expiresAt: number }
 interface RemovalJob {
   account: string;
   userId: string;
+  storagePrefix?: string;
   status: "running" | "paused" | "failed" | "completed";
   cursor?: string;
   deleted: number;
@@ -164,7 +165,7 @@ export class Admin {
     const prefix = url.searchParams.get("prefix") ?? "";
     const cursor = url.searchParams.get("cursor") ?? undefined;
     const [accounts, objects, job, csrf] = await Promise.all([this.accounts(), account ? this.metadata(account, prefix, cursor) : Promise.resolve({ objects: [], cursor: undefined }), account ? this.job(account) : Promise.resolve(null), this.csrf(session)]);
-    return page(dashboardPage(accounts, account, prefix, objects.objects, objects.cursor, job, csrf));
+    return page(dashboardPage(accounts, account, prefix, objects.objects, objects.cursor, job, csrf, url.searchParams.get("created") ?? ""));
   }
 
   private async create(request: Request): Promise<Response> {
@@ -178,7 +179,7 @@ export class Admin {
     const record = makeUserRecord(crypto.randomUUID(), account, salt, iterations, hash, await wrapKey(this.masterKey, generateDataKey()));
     await this.env.ACCOUNTS_KV.put(`users/${account}`, JSON.stringify(record));
     audit("account.create", account, "success");
-    return redirect(`/admin?account=${encodeURIComponent(account)}`);
+    return redirect(`/admin?created=${encodeURIComponent(account)}`);
   }
 
   private async action(request: Request, rawAccount: string, action: string): Promise<Response> {
@@ -206,7 +207,7 @@ export class Admin {
       const gate = this.env.ADMIN_CSRF.get(this.env.ADMIN_CSRF.idFromName(`account/${record.id}`));
       await gate.fetch("https://admin/removal", { method: "POST" });
       await this.env.ACCOUNTS_KV.put(`users/${account}`, JSON.stringify({ ...record, disabled: true }));
-      await this.saveJob({ account, userId: record.id, status: "running", deleted: 0, retries: 0, updatedAt: now });
+      await this.saveJob({ account, userId: record.id, storagePrefix: storagePrefix(record), status: "running", deleted: 0, retries: 0, updatedAt: now });
     } else return response("Not Found", 404);
     audit(`account.${action}`, account, "success");
     return redirect(`/admin?account=${encodeURIComponent(account)}`);
@@ -217,7 +218,7 @@ export class Admin {
       const gate = this.env.ADMIN_CSRF.get(this.env.ADMIN_CSRF.idFromName(`account/${job.userId}`));
       const activity = await (await gate.fetch("https://admin/removal")).json<{ active: number }>();
       if (activity.active > 0) return;
-      const listed = await this.env.BACKUP_BUCKET.list({ prefix: `u/${job.userId}/`, limit: BATCH_SIZE });
+      const listed = await this.env.BACKUP_BUCKET.list({ prefix: job.storagePrefix ?? `u/${job.userId}/`, limit: BATCH_SIZE });
       for (const object of listed.objects) {
         try { await this.env.BACKUP_BUCKET.delete(object.key); job.deleted += 1; }
         catch (error) {
@@ -250,12 +251,12 @@ export class Admin {
 
   private async metadata(account: string, prefix: string, cursor?: string): Promise<{ objects: Metadata[]; cursor?: string }> {
     const record = await this.record(account); if (!record) return { objects: [] };
-    const base = `u/${record.id}/${prefix}`;
+    const base = `${storagePrefix(record)}${prefix}`;
     const listed = await this.env.BACKUP_BUCKET.list({ prefix: base, delimiter: "/", cursor, limit: 100 });
     // R2 list() omits custom metadata; only head the current read-only page.
     const heads = await Promise.all(listed.objects.map((object) => this.env.BACKUP_BUCKET.head(object.key)));
-    const directories = (listed.delimitedPrefixes ?? []).map((key) => ({ path: key.slice(`u/${record.id}/`.length), type: "directory", size: "-", created: "-", mtime: "-", etag: "-" }));
-    return { objects: [...directories, ...heads.filter((object): object is R2Object => object !== null).map((object) => objectMetadata(object, record.id))], cursor: listed.truncated ? listed.cursor : undefined };
+    const directories = (listed.delimitedPrefixes ?? []).map((key) => ({ path: key.slice(storagePrefix(record).length), type: "directory", size: "-", created: "-", mtime: "-", etag: "-" }));
+    return { objects: [...directories, ...heads.filter((object): object is R2Object => object !== null).map((object) => objectMetadata(object, storagePrefix(record)))], cursor: listed.truncated ? listed.cursor : undefined };
   }
 
   private async form(request: Request, action: () => Promise<Response>): Promise<Response> {
@@ -276,7 +277,8 @@ export class Admin {
 }
 
 interface Metadata { path: string; type: string; size: string; created: string; mtime: string; etag: string }
-function objectMetadata(object: R2Object, userId: string): Metadata { const m = object.customMetadata ?? {}; return { path: object.key.slice(`u/${userId}/`.length), type: m.wdv_type ?? "file", size: m.wdv_size ?? "unknown", created: m.wdv_created ?? object.uploaded.toISOString(), mtime: m.wdv_mtime ?? object.uploaded.toISOString(), etag: m.wdv_md5 ?? object.etag }; }
+function storagePrefix(record: UserRecord): string { return record.storagePrefix ?? `u/${record.id}/`; }
+function objectMetadata(object: R2Object, prefix: string): Metadata { const m = object.customMetadata ?? {}; return { path: object.key.slice(prefix.length), type: m.wdv_type ?? "file", size: m.wdv_size ?? "unknown", created: m.wdv_created ?? object.uploaded.toISOString(), mtime: m.wdv_mtime ?? object.uploaded.toISOString(), etag: m.wdv_md5 ?? object.etag }; }
 function validAccount(value: string): boolean { return /^[a-z0-9][a-z0-9._-]{0,62}$/.test(value); }
 function sameOrigin(request: Request): boolean { return request.headers.get("Origin") === new URL(request.url).origin; }
 function cookie(header: string | null, name: string): string | null { return header?.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${name}=`))?.slice(name.length + 1) ?? null; }
@@ -318,7 +320,7 @@ function statusBadge(status: string | undefined, type: "account" | "job" = "job"
   return `<span class="badge badge-${variant}">${labels[status] ?? escape(status)}</span>`;
 }
 
-function dashboardPage(accounts: Array<{ account: string; record: UserRecord; job: RemovalJob | null }>, account: string, prefix: string, objects: Metadata[], cursor: string | undefined, job: RemovalJob | null, csrf: string): string {
+function dashboardPage(accounts: Array<{ account: string; record: UserRecord; job: RemovalJob | null }>, account: string, prefix: string, objects: Metadata[], cursor: string | undefined, job: RemovalJob | null, csrf: string, created: string): string {
   const enabled = accounts.filter(({ record }) => !record.disabled).length;
   const activeRemovals = accounts.filter(({ job }) => job && ["running", "paused"].includes(job.status)).length;
   const rows = accounts.map(({ account: name, record, job: accountJob }) => `<tr><td><a href="/admin?account=${encodeURIComponent(name)}">${escape(name)}</a></td><td>${statusBadge(record.disabled ? "disabled" : "active", "account")}</td><td>${statusBadge(accountJob?.status)}</td><td><form class="table-action" method="post" action="/admin/accounts/${encodeURIComponent(name)}/${record.disabled ? "enable" : "disable"}"><input type="hidden" name="csrf" value="${csrf}"><button class="button button-secondary" type="submit">${record.disabled ? "启用" : "停用"}</button></form></td></tr>`).join("");
@@ -329,5 +331,5 @@ function dashboardPage(accounts: Array<{ account: string; record: UserRecord; jo
     return `<tr><td>${path}</td><td>${escape(o.type)}</td><td>${escape(o.size)}</td><td>${escape(o.created)}</td><td>${escape(o.mtime)}</td><td>${escape(o.etag)}</td></tr>`;
   }).join("");
   const selected = account ? `<section class="detail" aria-labelledby="account-title"><div class="panel"><div class="panel-heading"><div><p class="eyebrow">Backup metadata</p><h2 id="account-title">账号：${escape(account)}</h2></div>${job ? statusBadge(job.status) : ""}</div><div class="panel-body"><form method="get" class="path-form"><input type="hidden" name="account" value="${escape(account)}"><label>路径前缀<input name="prefix" value="${escape(prefix)}" placeholder="例如：archives/"></label><button class="button button-secondary" type="submit">筛选元数据</button></form></div><div class="table-scroll"><table><thead><tr><th>路径</th><th>类型</th><th>明文大小</th><th>创建时间</th><th>修改时间</th><th>ETag</th></tr></thead><tbody>${objectRows || `<tr><td colspan="6" class="empty">此路径下没有可显示的备份元数据。</td></tr>`}</tbody></table></div>${cursor ? `<div class="panel-body"><a href="/admin?account=${encodeURIComponent(account)}&prefix=${encodeURIComponent(prefix)}&cursor=${encodeURIComponent(cursor)}">加载下一页元数据</a></div>` : ""}</div>${job ? `<div class="panel-body job">${statusBadge(job.status)}<p>已删除 ${job.deleted} 个对象。${job.error ? `错误摘要：${escape(job.error)}` : ""}</p>${["running", "paused"].includes(job.status) ? `<form class="form-actions" method="post" action="/admin/accounts/${encodeURIComponent(account)}/${job.status === "running" ? "pause" : "resume"}"><input type="hidden" name="csrf" value="${csrf}"><button class="button button-secondary" type="submit">${job.status === "running" ? "暂停移除任务" : "继续移除任务"}</button></form>` : ""}</div>` : ""}</section><section class="workspace"><div class="panel"><div class="panel-heading"><div><p class="eyebrow">Credentials</p><h2>重设密码</h2></div></div><div class="panel-body"><form method="post" action="/admin/accounts/${encodeURIComponent(account)}/password"><input type="hidden" name="csrf" value="${csrf}"><div class="field-grid compact"><label>新密码<input name="password" type="password" minlength="8" required autocomplete="new-password"></label><label>确认新密码<input name="passwordConfirmation" type="password" minlength="8" required autocomplete="new-password"></label></div><div class="form-actions"><button class="button" type="submit">更新账号密码</button></div></form></div></div><aside class="panel destructive"><div class="panel-heading"><div><p class="eyebrow">Irreversible action</p><h2>移除账号</h2></div></div><div class="panel-body"><p class="muted">这会停用账号并异步移除其全部备份对象。操作无法撤销。</p><form method="post" action="/admin/accounts/${encodeURIComponent(account)}/remove"><input type="hidden" name="csrf" value="${csrf}"><label>输入账号名确认<input name="confirmation" required autocomplete="off"></label><div class="form-actions"><button class="button button-danger" type="submit">移除账号及备份</button></div></form></div></aside></section>` : "";
-  return layout("cf-webdav 管理", `<main class="shell"><header class="topbar"><a class="brand" href="/admin"><span class="brand-mark">wd</span><span>cf-webdav</span></a><form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="${csrf}"><button class="button button-secondary" type="submit">退出登录</button></form></header><div class="intro"><div><p class="eyebrow">Management surface</p><h1>管理概览</h1><p>集中管理 WebDAV 账号，并以只读方式检查备份元数据。</p></div></div><section class="metrics" aria-label="账号状态摘要"><article class="metric"><span class="metric-label">账号总数</span><strong class="metric-value">${accounts.length}</strong></article><article class="metric"><span class="metric-label">已启用账号</span><strong class="metric-value metric-accent">${enabled}</strong></article><article class="metric"><span class="metric-label">未完成的移除任务</span><strong class="metric-value">${activeRemovals}</strong></article></section><section class="workspace"><div class="panel"><div class="panel-heading"><div><p class="eyebrow">Accounts</p><h2>账号</h2></div><span class="muted">选择账号查看元数据</span></div><div class="table-scroll"><table><thead><tr><th>账号</th><th>状态</th><th>移除任务</th><th aria-label="操作"></th></tr></thead><tbody>${rows || `<tr><td colspan="4" class="empty">暂无账号。请先在右侧创建一个账号。</td></tr>`}</tbody></table></div></div><aside class="panel"><div class="panel-heading"><div><p class="eyebrow">New account</p><h2>创建账号</h2></div></div><div class="panel-body"><form method="post" action="/admin/accounts"><input type="hidden" name="csrf" value="${csrf}"><div class="field-grid"><label>账号名<input name="account" required pattern="[a-z0-9][a-z0-9._-]{0,62}" placeholder="backup-prod" autocomplete="username"></label><label>初始密码<input name="password" type="password" minlength="8" required autocomplete="new-password"></label><label>确认初始密码<input name="passwordConfirmation" type="password" minlength="8" required autocomplete="new-password"></label></div><div class="form-actions"><button class="button" type="submit">创建账号</button></div></form></div></aside></section>${selected}</main>`);
+  return layout("cf-webdav 管理", `<main class="shell"><header class="topbar"><a class="brand" href="/admin"><span class="brand-mark">wd</span><span>cf-webdav</span></a><form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="${csrf}"><button class="button button-secondary" type="submit">退出登录</button></form></header><div class="intro"><div><p class="eyebrow">Management surface</p><h1>管理概览</h1><p>集中管理 WebDAV 账号，并以只读方式检查备份元数据。</p></div></div>${created ? `<p class="notice" role="status">账号 ${escape(created)} 已创建。点击账号名可查看其备份元数据。</p>` : ""}<section class="metrics" aria-label="账号状态摘要"><article class="metric"><span class="metric-label">账号总数</span><strong class="metric-value">${accounts.length}</strong></article><article class="metric"><span class="metric-label">已启用账号</span><strong class="metric-value metric-accent">${enabled}</strong></article><article class="metric"><span class="metric-label">未完成的移除任务</span><strong class="metric-value">${activeRemovals}</strong></article></section><section class="workspace"><div class="panel"><div class="panel-heading"><div><p class="eyebrow">Accounts</p><h2>账号</h2></div><span class="muted">选择账号查看元数据</span></div><div class="table-scroll"><table><thead><tr><th>账号</th><th>状态</th><th>移除任务</th><th aria-label="操作"></th></tr></thead><tbody>${rows || `<tr><td colspan="4" class="empty">暂无账号。请先在右侧创建一个账号。</td></tr>`}</tbody></table></div></div><aside class="panel"><div class="panel-heading"><div><p class="eyebrow">New account</p><h2>创建账号</h2></div></div><div class="panel-body"><form method="post" action="/admin/accounts"><input type="hidden" name="csrf" value="${csrf}"><div class="field-grid"><label>账号名<input name="account" required pattern="[a-z0-9][a-z0-9._-]{0,62}" placeholder="backup-prod" autocomplete="username"></label><label>初始密码<input name="password" type="password" minlength="8" required autocomplete="new-password"></label><label>确认初始密码<input name="passwordConfirmation" type="password" minlength="8" required autocomplete="new-password"></label></div><div class="form-actions"><button class="button" type="submit">创建账号</button></div></form></div></aside></section>${selected}</main>`);
 }
