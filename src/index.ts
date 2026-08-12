@@ -1,4 +1,4 @@
-import { Auth } from "./auth";
+import { Auth, PBKDF2_MAX_ITERATIONS, validPbkdf2Iterations } from "./auth";
 import { acquireAccountMutation, Admin, releaseAccountMutation } from "./admin";
 import { importKeyFromBytes } from "./crypto";
 import { hexToBytes } from "./util";
@@ -11,6 +11,10 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     let account: string | undefined;
     try {
+      const pbkdf2Iterations = env.PBKDF2_ITERATIONS ?? 100000;
+      if (!validPbkdf2Iterations(pbkdf2Iterations)) {
+        return new Response(`PBKDF2_ITERATIONS must be an integer between 1 and ${PBKDF2_MAX_ITERATIONS}`, { status: 500, headers: { "Cache-Control": "no-store" } });
+      }
       const masterKeyBytes = hexToBytes(env.MASTER_KEY);
       if (masterKeyBytes.length !== 32) throw new Error("MASTER_KEY 必须是 32 字节");
       const masterKey = await importKeyFromBytes(masterKeyBytes);
@@ -22,7 +26,7 @@ export default {
       const auth = new Auth(
         env.ACCOUNTS_KV,
         masterKey,
-        env.PBKDF2_ITERATIONS ?? 210000,
+        pbkdf2Iterations,
         (env.AUTH_CACHE_TTL_SECONDS ?? 60) * 1000,
       );
       const user = await auth.authenticate(request);

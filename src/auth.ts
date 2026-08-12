@@ -2,6 +2,12 @@ import { base64ToBytes, bytesToBase64, constantTimeEqual, decodeBase64Utf8 } fro
 import { DATA_KEY_LENGTH, IntegrityError, unwrapKey } from "./crypto";
 import type { Env } from "./env";
 
+export const PBKDF2_MAX_ITERATIONS = 100000;
+
+export function validPbkdf2Iterations(iterations: number): boolean {
+  return Number.isInteger(iterations) && iterations >= 1 && iterations <= PBKDF2_MAX_ITERATIONS;
+}
+
 export interface UserRecord {
   v: 1;
   id: string;
@@ -86,6 +92,7 @@ export class Auth {
       return this.toUser(record, cached.dataKey, username);
     }
 
+    if (!validPbkdf2Iterations(record.iter)) return null;
     const hash = await pbkdf2Hash(creds.password, record.salt, record.iter);
     if (!constantTimeEqual(hash, record.hash)) {
       return null;

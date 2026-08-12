@@ -134,7 +134,7 @@ Workers & Pages → cf-webdav → Settings → Variables and Secrets
 | 名称 | 默认值 | 说明 |
 | --- | ---: | --- |
 | `CHUNK_SIZE_MB` | `4` | 加密分块大小，只能是 1 到 48 的整数 |
-| `PBKDF2_ITERATIONS` | `210000` | PBKDF2-SHA256 迭代次数 |
+| `PBKDF2_ITERATIONS` | `100000` | PBKDF2-SHA256 迭代次数（Cloudflare Workers 上限为 `100000`） |
 | `AUTH_CACHE_TTL_SECONDS` | `60` | 认证缓存 TTL |
 | `PROPFIND_MAX_ENTRIES` | `5000` | 单次 PROPFIND 最大条目数 |
 | `LOCK_TIMEOUT_SECONDS` | `3600` | WebDAV 锁默认超时秒数 |

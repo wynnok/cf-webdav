@@ -1,7 +1,7 @@
 import { randomBytes, pbkdf2Sync, createCipheriv } from "node:crypto";
 import { randomUUID } from "node:crypto";
 
-const ITERATIONS = Number(process.env.PBKDF2_ITERATIONS ?? 210000);
+const ITERATIONS = Number(process.env.PBKDF2_ITERATIONS ?? 100000);
 const MASTER_KEY_HEX = process.env.MASTER_KEY;
 
 function b64(b: Uint8Array): string {

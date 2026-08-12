@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { env, SELF } from "cloudflare:test";
 import { Admin } from "../src/admin";
+import { validPbkdf2Iterations } from "../src/auth";
 import { importKeyFromBytes } from "../src/crypto";
 import { seedUser } from "./helpers";
 
@@ -39,6 +40,11 @@ describe("管理面", () => {
     expect(JSON.parse((await env.ACCOUNTS_KV.get("users/managed"))!).disabled).not.toBe(true);
     const reused = await SELF.fetch("https://dav.example.com/admin/accounts", form(cookie, csrf, { account: "second", password: "new-password", passwordConfirmation: "new-password" }));
     expect(reused.status).toBe(403);
+  });
+
+  it("拒绝超过 Workers 支持上限的 PBKDF2 配置", () => {
+    expect(validPbkdf2Iterations(100000)).toBe(true);
+    expect(validPbkdf2Iterations(100001)).toBe(false);
   });
 
   it("浏览只显示元数据，不返回备份内容", async () => {

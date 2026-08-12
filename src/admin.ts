@@ -173,8 +173,9 @@ export class Admin {
     const password = String(form.get("password") ?? "");
     if (!validAccount(account) || password.length < 8 || password !== String(form.get("passwordConfirmation") ?? "") || await this.record(account)) return redirect("/admin?error=invalid-account");
     const salt = randomBytes(16);
-    const hash = await pbkdf2Hash(password, bytesToBase64(salt), this.env.PBKDF2_ITERATIONS ?? 210000);
-    const record = makeUserRecord(crypto.randomUUID(), account, salt, this.env.PBKDF2_ITERATIONS ?? 210000, hash, await wrapKey(this.masterKey, generateDataKey()));
+    const iterations = this.env.PBKDF2_ITERATIONS ?? 100000;
+    const hash = await pbkdf2Hash(password, bytesToBase64(salt), iterations);
+    const record = makeUserRecord(crypto.randomUUID(), account, salt, iterations, hash, await wrapKey(this.masterKey, generateDataKey()));
     await this.env.ACCOUNTS_KV.put(`users/${account}`, JSON.stringify(record));
     audit("account.create", account, "success");
     return redirect(`/admin?account=${encodeURIComponent(account)}`);
@@ -196,7 +197,8 @@ export class Admin {
       const form = await request.formData(); const password = String(form.get("password") ?? "");
       if (password.length < 8 || password !== String(form.get("passwordConfirmation") ?? "")) return redirect(`/admin?account=${encodeURIComponent(account)}&error=invalid-password`);
       const salt = randomBytes(16);
-      await this.env.ACCOUNTS_KV.put(`users/${account}`, JSON.stringify({ ...record, salt: bytesToBase64(salt), hash: await pbkdf2Hash(password, bytesToBase64(salt), record.iter) }));
+      const iterations = this.env.PBKDF2_ITERATIONS ?? 100000;
+      await this.env.ACCOUNTS_KV.put(`users/${account}`, JSON.stringify({ ...record, iter: iterations, salt: bytesToBase64(salt), hash: await pbkdf2Hash(password, bytesToBase64(salt), iterations) }));
     } else if (action === "remove") {
       const form = await request.formData();
       if (String(form.get("confirmation") ?? "") !== account) return redirect(`/admin?account=${encodeURIComponent(account)}&error=confirmation`);
