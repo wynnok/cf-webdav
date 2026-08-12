@@ -12,7 +12,8 @@
 - 文件 ETag 使用明文 MD5，可用于确定性变更检测。
 - 支持 `OPTIONS`、`PROPFIND`、`GET`、`HEAD`、`PUT`、`MKCOL`、`DELETE`、`COPY`、`MOVE`、`PROPPATCH`、`LOCK` 和 `UNLOCK`。
 - 支持 Range 读取；响应前会认证完整加密对象，检测篡改与整块边界截断。
-- 提供账号创建、账号记录导出和主密钥重新包装脚本。
+- `/admin` 提供账号生命周期管理及只读备份元数据浏览，不提供备份内容下载、解密、预览或对象删除。
+- 提供账号记录导出和主密钥重新包装脚本。
 
 ## 架构
 
@@ -103,6 +104,8 @@ Workers Free 的 10 ms CPU 和 50 次 subrequest 限额不符合本项目的 PBK
 
 通过 GitHub 提交该配置修改到 `main`。不要将主密钥、账号密码或账号导出文件提交到 GitHub。
 
+`wrangler.jsonc` 同时声明了 `ADMIN_CSRF` Durable Object 及其首次 migration。Workers Builds 执行 `npx wrangler deploy` 时会自动应用该 migration；不要删除或手动修改已有 migration tag。
+
 ### 4．导入 GitHub 仓库并创建 Worker
 
 在 Cloudflare Dashboard：
@@ -170,19 +173,37 @@ openssl rand -hex 32
 
 复制输出并保存到密码管理器和离线恢复介质，然后在 Dashboard 中粘贴为 `MASTER_KEY` Secret。
 
+可在可信设备生成 `ADMIN_SESSION_SECRET`：
+
+```bash
+openssl rand -base64 48
+```
+
 > 丢失 `MASTER_KEY` 会导致所有备份永久无法解密。不要将它发送到聊天、保存到 GitHub、写入脚本或公开终端历史。
 
 保存变量后，点击 **Deploy** 或触发一次新的 GitHub 部署。
 
-`/admin` 缺少任一管理员 Secret 时会返回 `503`。管理员会话在浏览器关闭后失效，且最长四小时；所有管理写操作均要求同源请求和由 `ADMIN_CSRF` Durable Object 原子消费的一次性 CSRF 令牌。`wrangler.jsonc` 已配置每分钟 Cron，用于继续账号移除任务及清理 30 天前的已完成或失败任务摘要。
+`/admin` 缺少任一管理员 Secret 时会返回 `503`。管理员会话在浏览器关闭后失效，且最长四小时；Cookie 使用 `HttpOnly`、`Secure` 与 `SameSite=Strict`。所有管理写操作均要求同源请求和由 `ADMIN_CSRF` Durable Object 原子消费的一次性 CSRF 令牌。
 
-### 6．创建第一个 WebDAV 账号
+`wrangler.jsonc` 已配置每分钟 Cron。每次最多处理一个、最多删除 500 个对象的账号移除批次；已完成或失败任务的摘要在 30 天后清理。`ADMIN_CSRF` 同时会在账号移除开始后拒绝新的 WebDAV 写请求，并等待已开始的写请求结束，避免遗留无账号记录可恢复的加密对象。
 
-推荐打开 `https://YOUR_WORKER.workers.dev/admin`，使用 `ADMIN_USERNAME` 与 `ADMIN_PASSWORD` 登录后创建账号。管理面还可只读查看备份元数据、停用或启用账号、重设密码，并发起可暂停或继续的账号移除任务。
+### 6．使用管理员界面创建和管理账号
 
-账号移除会立即停用账号，并由每分钟 Cron 分批删除其 R2 前缀下的对象；此过程不可取消或回滚。不要在该账号仍有需要保留的备份时执行移除。
+打开 `https://YOUR_WORKER.workers.dev/admin`，使用 `ADMIN_USERNAME` 与 `ADMIN_PASSWORD` 登录。首次登录后创建第一个 WebDAV 账号；账号名仅允许小写字母、数字、`.`、`_` 和 `-`，密码至少 8 个字符，创建的账号默认启用。
 
-也可以按以下方式手动创建账号记录：
+管理面可以：
+
+- 查看账号状态及账号移除任务状态。
+- 启用或停用账号。
+- 重设密码。此操作仅替换密码盐和哈希，不改变数据密钥、账号 ID 或既有备份对象。
+- 只读浏览某个账号的备份元数据：目录层级、路径前缀筛选、每页最多 100 项，以及路径、类型、明文大小、创建时间、修改时间和 ETag。
+- 发起、暂停或继续账号移除任务。
+
+管理面不会显示、写入日志或在提交后重新展示 WebDAV 密码；也不能下载、解密、预览、编辑或删除单个备份对象。
+
+账号移除是危险且不可逆的操作。必须准确输入账号名确认；Worker 会立即停用该账号，再由 Cron 分批删除其 R2 前缀下的对象。任务可以暂停和继续，但不能取消或回滚；运行或暂停期间不能对该账号启用、停用或重设密码。单个对象删除连续失败三次会停止任务并保留失败对象路径与错误摘要，供管理员排查。不要在该账号仍有需要保留的备份时执行移除。
+
+### 7．可选：手动创建账号记录
 
 账号记录需要由项目脚本使用与你设置到 Worker 中相同的 `MASTER_KEY` 生成。此步骤只需要本机安装 Node.js，不需要本机安装或登录 Cloudflare Wrangler。
 
@@ -220,7 +241,15 @@ npm run user:create -- --disabled alice '高强度WebDAV密码'
 
 账号记录中的 `disabled: true` 会拒绝下一次认证请求。
 
-### 7．部署后验收
+### 8．部署后验收
+
+管理员界面应返回登录页：
+
+```bash
+curl -i https://YOUR_WORKER.workers.dev/admin
+```
+
+设置全部管理员 Secret 后，响应应为 `200`，且正文包含登录表单。登录并创建账号后，确认账号显示为“已启用”；上传一个测试对象后，确认管理面只显示对象元数据而不显示其内容。
 
 未认证请求应返回 `401`：
 
@@ -256,7 +285,7 @@ curl -i -X DELETE \
   https://YOUR_WORKER.workers.dev/deployment-check.txt
 ```
 
-### 8．绑定自定义域名
+### 9．绑定自定义域名
 
 建议使用独立子域名，例如 `dav.example.com`：
 
@@ -265,7 +294,7 @@ curl -i -X DELETE \
 3. 填写 `dav.example.com`。
 4. 等待 Cloudflare 配置 HTTPS 证书。
 
-之后将 `https://dav.example.com/` 配置给备份客户端。即使绑定了自定义域名，它仍然是 Worker，不是 Pages。
+之后将 `https://dav.example.com/` 配置给备份客户端，并通过 `https://dav.example.com/admin` 访问管理面。即使绑定了自定义域名，它仍然是 Worker，不是 Pages。
 
 ## 备份客户端配置
 
@@ -312,6 +341,8 @@ rclone purge cfwebdav:backup-test
 - 在 Cloudflare Dashboard 的 **Security → WAF → Rate limiting rules** 中，为 `dav.example.com/*` 配置限流规则。
 - 至少限制异常高频请求和 Basic Auth 暴力尝试。
 - Workers Logs 会记录方法、账号、路径与状态；不要记录 Authorization、密码、`MASTER_KEY` 或完整备份内容。
+- 管理动作会记录动作、目标账号、结果和时间；不会记录管理员密码、WebDAV 密码、会话 Cookie 或 CSRF 令牌。
+- 管理面与 WebDAV 共用同一个 Worker 域名。为该域名配置 WAF 限流时，保留管理员登录和已认证备份客户端的正常访问能力。
 
 ### 文件大小与性能边界
 
