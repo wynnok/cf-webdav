@@ -16,8 +16,8 @@ export interface UserRecord {
   hash: string;
   keyWrapped: string;
   created: string;
-  /** R2 对象命名空间；未设置的旧账号使用 legacy `u/<id>/`。 */
-  storagePrefix?: string;
+  /** R2 对象命名空间。 */
+  storagePrefix: string;
   disabled?: boolean;
 }
 
@@ -121,7 +121,9 @@ export class Auth {
     const raw = await this.kv.get(`users/${username}`);
     if (!raw) return null;
     try {
-      return JSON.parse(raw) as UserRecord;
+      const record = JSON.parse(raw) as UserRecord;
+      validateUserRecord(record);
+      return record;
     } catch {
       return null;
     }
@@ -131,7 +133,7 @@ export class Auth {
     return {
       userId: record.id,
       username,
-      prefix: record.storagePrefix ?? `u/${record.id}/`,
+      prefix: record.storagePrefix,
       dataKey,
     };
   }
@@ -167,7 +169,7 @@ export function makeUserRecord(
 
 export function validateUserRecord(record: UserRecord): void {
   if (record.v !== 1) throw new Error("不支持的 user record 版本");
-  if (!record.id || !record.salt || !record.iter || !record.hash || !record.keyWrapped) {
+  if (!record.id || !record.salt || !record.iter || !record.hash || !record.keyWrapped || !record.storagePrefix) {
     throw new Error("user record 字段缺失");
   }
 }

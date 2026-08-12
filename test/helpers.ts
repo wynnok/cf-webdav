@@ -28,10 +28,11 @@ export async function seedUser(
     hash,
     keyWrapped,
     created: new Date().toISOString(),
+    storagePrefix: `accounts/${id}/`,
     disabled: opts.disabled,
   };
   await env.ACCOUNTS_KV.put(`users/${username.toLowerCase()}`, JSON.stringify(record));
-  return { id, username, prefix: `u/${id}/` };
+  return { id, username, prefix: `accounts/${id}/` };
 }
 
 function hex(s: string): Uint8Array {

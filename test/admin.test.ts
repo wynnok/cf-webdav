@@ -62,6 +62,14 @@ describe("管理面", () => {
     expect(validPbkdf2Iterations(100001)).toBe(false);
   });
 
+  it("不再接受缺少 accounts 存储前缀的旧账号记录", async () => {
+    const user = await seedUser("old-layout", "correct-horse-battery-staple");
+    const record = JSON.parse((await env.ACCOUNTS_KV.get("users/old-layout"))!);
+    delete record.storagePrefix;
+    await env.ACCOUNTS_KV.put("users/old-layout", JSON.stringify(record));
+    expect((await SELF.fetch("https://dav.example.com/", { headers: { Authorization: basicAuth(user.username, "correct-horse-battery-staple") } })).status).toBe(401);
+  });
+
   it("浏览只显示元数据，不返回备份内容", async () => {
     const user = await seedUser("metadata", "correct-horse-battery-staple");
     await env.BACKUP_BUCKET.put(`${user.prefix}secret.txt`, "encrypted-value", { customMetadata: { wdv_type: "file", wdv_size: "42", wdv_created: "2026-01-01T00:00:00.000Z", wdv_mtime: "2026-01-02T00:00:00.000Z", wdv_md5: "abc" } });

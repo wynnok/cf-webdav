@@ -1,4 +1,4 @@
-import { makeUserRecord, normalizeUsername, pbkdf2Hash, type UserRecord } from "./auth";
+import { makeUserRecord, normalizeUsername, pbkdf2Hash, type UserRecord, validateUserRecord } from "./auth";
 import { generateDataKey, randomBytes, wrapKey } from "./crypto";
 import type { Env } from "./env";
 import { bytesToBase64, constantTimeEqual } from "./util";
@@ -13,7 +13,7 @@ interface Session { id: string; expiresAt: number }
 interface RemovalJob {
   account: string;
   userId: string;
-  storagePrefix?: string;
+  storagePrefix: string;
   status: "running" | "paused" | "failed" | "completed";
   cursor?: string;
   deleted: number;
@@ -218,7 +218,7 @@ export class Admin {
       const gate = this.env.ADMIN_CSRF.get(this.env.ADMIN_CSRF.idFromName(`account/${job.userId}`));
       const activity = await (await gate.fetch("https://admin/removal")).json<{ active: number }>();
       if (activity.active > 0) return;
-      const listed = await this.env.BACKUP_BUCKET.list({ prefix: job.storagePrefix ?? `u/${job.userId}/`, limit: BATCH_SIZE });
+      const listed = await this.env.BACKUP_BUCKET.list({ prefix: job.storagePrefix, limit: BATCH_SIZE });
       for (const object of listed.objects) {
         try { await this.env.BACKUP_BUCKET.delete(object.key); job.deleted += 1; }
         catch (error) {
@@ -271,13 +271,13 @@ export class Admin {
   private async csrf(session: Session): Promise<string> { const token = bytesToBase64(randomBytes(32)).replace(/[+/=]/g, ""); await this.env.ADMIN_KV.put(`csrf/${session.id}/${token}`, "1", { expirationTtl: CSRF_TTL }); const stub = this.env.ADMIN_CSRF.get(this.env.ADMIN_CSRF.idFromName(session.id)); await stub.fetch(`https://csrf/token?token=${encodeURIComponent(token)}&expiresAt=${Date.now() + CSRF_TTL * 1000}`, { method: "PUT" }); return token; }
   private async session(request: Request): Promise<Session | null> { const raw = cookie(request.headers.get("Cookie"), COOKIE); if (!raw) return null; const dot = raw.lastIndexOf("."); const payload = raw.slice(0, dot); if (dot < 1 || !constantTimeEqual(await this.sign(payload), raw)) return null; const [id, expiry] = payload.split("."); const expiresAt = Number(expiry); return id && expiresAt > Date.now() && await this.env.ADMIN_KV.get(`sessions/${id}`) ? { id, expiresAt } : null; }
   private async sign(payload: string): Promise<string> { const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(this.env.ADMIN_SESSION_SECRET!), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]); return `${payload}.${bytesToBase64(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload)))).replace(/[+/=]/g, "")}`; }
-  private async record(account: string): Promise<UserRecord | null> { const raw = await this.env.ACCOUNTS_KV.get(`users/${account}`); return raw ? JSON.parse(raw) as UserRecord : null; }
+  private async record(account: string): Promise<UserRecord | null> { const raw = await this.env.ACCOUNTS_KV.get(`users/${account}`); if (!raw) return null; try { const record = JSON.parse(raw) as UserRecord; validateUserRecord(record); return record; } catch { return null; } }
   private async job(account: string): Promise<RemovalJob | null> { const raw = await this.env.ADMIN_KV.get(`removals/${account}`); return raw ? JSON.parse(raw) as RemovalJob : null; }
   private saveJob(job: RemovalJob): Promise<void> { return this.env.ADMIN_KV.put(`removals/${job.account}`, JSON.stringify(job)); }
 }
 
 interface Metadata { path: string; type: string; size: string; created: string; mtime: string; etag: string }
-function storagePrefix(record: UserRecord): string { return record.storagePrefix ?? `u/${record.id}/`; }
+function storagePrefix(record: UserRecord): string { return record.storagePrefix; }
 function objectMetadata(object: R2Object, prefix: string): Metadata { const m = object.customMetadata ?? {}; return { path: object.key.slice(prefix.length), type: m.wdv_type ?? "file", size: m.wdv_size ?? "unknown", created: m.wdv_created ?? object.uploaded.toISOString(), mtime: m.wdv_mtime ?? object.uploaded.toISOString(), etag: m.wdv_md5 ?? object.etag }; }
 function validAccount(value: string): boolean { return /^[a-z0-9][a-z0-9._-]{0,62}$/.test(value); }
 function sameOrigin(request: Request): boolean { return request.headers.get("Origin") === new URL(request.url).origin; }
