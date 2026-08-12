@@ -21,6 +21,22 @@ WebDAV 客户端 ──Basic Auth──▶ Worker ──加密流──▶ R2(�
 - 明文按 4 MiB 分块,每块 AES-256-GCM,IV 按块索引派生,**AAD 绑定「路径+块索引」**,防篡改、防跨路径换包
 - 目录 = 尾部 `/` 的加密空对象标记;列表用 R2 `delimiter` 分页
 
+## 部署模型:Cloudflare Workers,非 Pages
+
+这是一个 **Cloudflare Worker** 服务,不是 Cloudflare Pages 项目。
+
+- Worker 入口为 `src/index.ts`,由 `wrangler.jsonc` 的 `main` 字段声明。
+- R2 桶、账号 KV 和锁 KV 都是 **Worker bindings**;请求在 Worker 中完成 Basic Auth、加密/解密和 WebDAV 协议处理。
+- 用 `npm run deploy` 或 `npx wrangler deploy` 部署,成功后 Wrangler 会输出 `*.workers.dev` Worker URL。
+- 项目不包含静态站点构建目录、`pages_build_output_dir` 或 Pages Functions。不要使用 `wrangler pages deploy`。
+- 生产环境推荐在 Cloudflare Dashboard 为该 Worker 绑定 Custom Domain,再将该 HTTPS 地址配置给备份客户端。WebDAV 是 API 服务,不提供网页管理界面。
+
+部署前可检查 Worker 构建和 bindings,不会上传任何版本:
+
+```bash
+npx wrangler deploy --dry-run
+```
+
 ## 快速开始
 
 本项目的 PBKDF2 认证和 PROPFIND 元数据读取以 **Workers Paid** 的 CPU/subrequest 配额为前提。请先确认 Worker 使用 Paid 计划；Workers Free 的 10ms CPU 与 50 次 subrequest 限额不符合 ADR-0003 的运行模型。
@@ -64,8 +80,28 @@ MASTER_KEY=<64hex> npm run user:create -- --disabled alice 'your-strong-password
 ### 4. 部署
 
 ```bash
-npx wrangler deploy
+# 部署 Cloudflare Worker
+npm run deploy
 ```
+
+部署后做最小验收:
+
+```bash
+# Worker URL 以实际 wrangler 输出为准
+curl -i -X OPTIONS https://YOUR_WORKER.workers.dev/
+# 预期:401 和 WWW-Authenticate: Basic;说明请求已到达 Worker
+```
+
+配置账号后,用 WebDAV 客户端或下列请求验证认证和 DAV 能力:
+
+```bash
+curl -i -X OPTIONS \
+  -u 'ACCOUNT:PASSWORD' \
+  https://YOUR_WORKER.workers.dev/
+# 预期:200、DAV: 1, 2 和 Allow 响应头
+```
+
+不要将真实密码、`MASTER_KEY` 或导出的账号记录放进 shell 历史、脚本或版本库。对生产验收,优先使用 rclone/duplicati 的安全凭据存储机制。
 
 ### 5. 客户端配置
 
@@ -142,6 +178,7 @@ OLD_MASTER_KEY=<old-64hex> NEW_MASTER_KEY=<new-64hex> \
 npm run dev        # wrangler dev 本地预览
 npm run typecheck  # tsc --noEmit
 npm test           # vitest + miniflare 全量测试
+npx wrangler deploy --dry-run  # 校验 Worker 打包与 bindings,不上传
 ```
 
 测试覆盖:加密往返/篡改检测/路径绑定/密钥包装/区间读、认证、全部 WebDAV 方法、R2 密文落盘校验。
@@ -152,3 +189,4 @@ npm test           # vitest + miniflare 全量测试
 - `PUT` 无 `Content-Length` 时会缓冲明文(备份工具几乎总是带 Content-Length)。
 - 密码哈希或被包装数据密钥变更会使认证缓存键失效;账号停用在下一次请求时生效。
 - `LOCK` 为独占语义,`shared` 按独占处理。
+- 已部署的 WDV1 加密对象与当前 WDV2 格式不兼容。当前项目尚未生产部署;若未来需要格式迁移,必须在部署前设计读取兼容或离线迁移流程。
