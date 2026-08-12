@@ -1,0 +1,25 @@
+{
+  "name": "cf-webdav",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "WebDAV service on Cloudflare Workers with R2 storage and server-side encryption",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "user:create": "node --no-warnings=ExperimentalWarning scripts/create-user.ts",
+    "accounts:export": "node --no-warnings=ExperimentalWarning scripts/export-accounts.ts",
+    "accounts:rewrap": "node --no-warnings=ExperimentalWarning scripts/rewrap-accounts.ts"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.8.13",
+    "@cloudflare/workers-types": "^5.20260804.1",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4",
+    "wrangler": "^4.29.0"
+  }
+}

@@ -1,0 +1,9 @@
+node_modules/
+.wrangler/
+.dev.vars
+dist/
+coverage/
+*.log
+accounts-*.json
+*.apply.sh
+.DS_Store

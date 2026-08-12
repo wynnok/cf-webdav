@@ -1,0 +1,37 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cf-webdav",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-07-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  "r2_buckets": [
+    {
+      "binding": "BACKUP_BUCKET",
+      "bucket_name": "cf-webdav-backup",
+      "preview_bucket_name": "cf-webdav-backup-preview"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "ACCOUNTS_KV",
+      "id": "REPLACE_WITH_ACCOUNTS_KV_ID",
+      "preview_id": "REPLACE_WITH_ACCOUNTS_KV_PREVIEW_ID"
+    },
+    {
+      "binding": "LOCKS_KV",
+      "id": "REPLACE_WITH_LOCKS_KV_ID",
+      "preview_id": "REPLACE_WITH_LOCKS_KV_PREVIEW_ID"
+    }
+  ],
+  "vars": {
+    "CHUNK_SIZE_MB": 4,
+    "PBKDF2_ITERATIONS": 210000,
+    "AUTH_CACHE_TTL_SECONDS": 60,
+    "PROPFIND_MAX_ENTRIES": 5000,
+    "LOCK_TIMEOUT_SECONDS": 3600,
+    "MAX_PUT_BYTES": 524288000
+  }
+}
