@@ -57,6 +57,53 @@ describe("管理面", () => {
     expect(detail).toContain("private.txt");
   });
 
+  it("操作失败时概览页渲染对应的错误提示", async () => {
+    const { cookie } = await login();
+    const html = await (await SELF.fetch("https://dav.example.com/admin?error=invalid-account", { headers: { Cookie: cookie } })).text();
+    expect(html).toContain("账号名或密码不符合要求");
+  });
+
+  it("创建账号成功提示使用成功样式而非错误样式", async () => {
+    const { cookie } = await login();
+    const html = await (await SELF.fetch("https://dav.example.com/admin?created=managed", { headers: { Cookie: cookie } })).text();
+    expect(html).toMatch(/class="notice notice-success"/);
+    expect(html).not.toMatch(/class="notice"[^>]*>账号 managed/);
+  });
+
+  it("元数据浏览显示逐级返回的面包屑导航", async () => {
+    const user = await seedUser("breadcrumb", "correct-horse-battery-staple");
+    await env.BACKUP_BUCKET.put(`${user.prefix}photos/2026/`, "dir", { customMetadata: { wdv_type: "dir" } });
+    const { cookie } = await login();
+    const html = await (await SELF.fetch("https://dav.example.com/admin?account=breadcrumb&prefix=photos/2026/", { headers: { Cookie: cookie } })).text();
+    expect(html).toContain("面包屑");
+    expect(html).toContain(`&prefix=${encodeURIComponent("photos/")}`);
+    expect(html).toContain(`&prefix=${encodeURIComponent("photos/2026/")}`);
+  });
+
+  it("明文大小以易读格式显示", async () => {
+    const user = await seedUser("readable", "correct-horse-battery-staple");
+    await env.BACKUP_BUCKET.put(`${user.prefix}big.bin`, "ciphertext", { customMetadata: { wdv_type: "file", wdv_size: "1572864" } });
+    const { cookie } = await login();
+    const html = await (await SELF.fetch("https://dav.example.com/admin?account=readable", { headers: { Cookie: cookie } })).text();
+    expect(html).toContain("1.5 MiB");
+  });
+
+  it("概览页显示管理员会话剩余时长", async () => {
+    const { cookie } = await login();
+    const html = await (await SELF.fetch("https://dav.example.com/admin", { headers: { Cookie: cookie } })).text();
+    expect(html).toMatch(/会话剩余(约 [0-9]+ 小时|不足 1 小时)/);
+  });
+
+  it("失败的移除任务显示失败对象路径和重试指引", async () => {
+    const user = await seedUser("failed-job", "correct-horse-battery-staple");
+    await env.ADMIN_KV.put("removals/failed-job", JSON.stringify({ account: "failed-job", userId: user.id, storagePrefix: user.prefix, status: "failed", deleted: 3, retries: 3, failedKey: `${user.prefix}stuck.bin`, error: "R2 delete failed", updatedAt: new Date().toISOString(), finishedAt: new Date().toISOString() }));
+    const { cookie } = await login();
+    const html = await (await SELF.fetch("https://dav.example.com/admin?account=failed-job", { headers: { Cookie: cookie } })).text();
+    expect(html).toContain("stuck.bin");
+    expect(html).not.toContain(user.prefix);
+    expect(html).toContain("重新发起移除");
+  });
+
   it("拒绝超过 Workers 支持上限的 PBKDF2 配置", () => {
     expect(validPbkdf2Iterations(100000)).toBe(true);
     expect(validPbkdf2Iterations(100001)).toBe(false);
