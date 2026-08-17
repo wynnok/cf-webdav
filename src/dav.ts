@@ -286,11 +286,17 @@ export class DavRouter {
   }
 
   private async read(request: Request, path: string, isHead: boolean): Promise<Response> {
-    const target = await this.storage.stat(path);
-    if (!target) throw new WebDavError(404, "资源不存在");
-    if (target.isDir) throw new WebDavError(404, "目录不支持 GET");
-
-    const range = parseRange(request.headers.get("Range"), target.size);
+    if (path === "" || new URL(request.url).pathname.endsWith("/")) {
+      throw new WebDavError(404, "目录不支持 GET");
+    }
+    // 无 Range 头时跳过 stat,单次 get 完成读取;有 Range 时需先取大小。
+    const rangeHeader = request.headers.get("Range");
+    let range: PlainRange | null = null;
+    if (rangeHeader) {
+      const target = await this.storage.stat(path);
+      if (!target) throw new WebDavError(404, "资源不存在");
+      range = parseRange(rangeHeader, target.size);
+    }
     const got = await this.storage.getFile(path, range ?? undefined);
     if (!got) throw new WebDavError(404, "资源不存在");
 
@@ -324,6 +330,7 @@ export class DavRouter {
       const im = request.headers.get("If-Match");
       if (im && !im.includes(entityTag(target))) throw new WebDavError(412, "Precondition Failed");
     }
+    const existingCreated = target && !target.isDir ? target.created : undefined;
 
     const cl = request.headers.get("Content-Length");
     const size = cl !== null && /^\d+$/.test(cl) ? Number(cl) : undefined;
@@ -335,7 +342,7 @@ export class DavRouter {
     const body = request.body ?? new ReadableStream<Uint8Array>({ start(c) { c.close(); } });
 
     const expectAbsent = request.headers.get("If-None-Match")?.trim() === "*";
-    const created = await this.storage.putFile(path, body, { size, contentType, mtime, expectAbsent });
+    const created = await this.storage.putFile(path, body, { size, contentType, mtime, expectAbsent, created: existingCreated });
     return new Response(null, {
       status: target ? 204 : 201,
       headers: davHeaders({ ETag: `"${entityTag(created)}"`, "Content-Length": "0" }),

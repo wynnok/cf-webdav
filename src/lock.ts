@@ -82,8 +82,8 @@ export class LockManager {
     for (let i = 0; i <= parts.length; i++) {
       candidates.push(parts.slice(0, i).join("/"));
     }
-    for (const p of candidates) {
-      const lock = await this.get(p);
+    const locks = await Promise.all(candidates.map((p) => this.get(p)));
+    for (const lock of locks) {
       if (lock && !heldTokens.has(lock.token)) {
         throw new WebDavError(423, `资源被锁:${lock.token}`, "lock-token-submitted");
       }

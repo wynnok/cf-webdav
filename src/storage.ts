@@ -1,4 +1,4 @@
-import { ciphertextLength, createDecryptStream, createEncryptStream } from "./crypto";
+import { ciphertextLength, createDecryptStream, createEncryptStream, md5Hex } from "./crypto";
 import type { PlainRange } from "./crypto";
 import { collectBytes, concatBytes, nowIso, oneShotStream } from "./util";
 
@@ -104,9 +104,11 @@ export class Storage {
 
   async stat(path: string): Promise<StoredNode | null> {
     if (path === "") return this.virtualDir("");
-    const fobj = await this.bucket.head(this.fileKey(path));
+    const [fobj, dobj] = await Promise.all([
+      this.bucket.head(this.fileKey(path)),
+      this.bucket.head(this.dirKey(path)),
+    ]);
     if (fobj) return this.toNode(fobj, path);
-    const dobj = await this.bucket.head(this.dirKey(path));
     if (dobj) return this.toNode(dobj, path, true);
     const probe = await this.bucket.list({ prefix: this.dirPrefix(path), limit: 1 });
     if (probe.objects.length > 0 || probe.delimitedPrefixes.length > 0) {
@@ -115,21 +117,13 @@ export class Storage {
     return null;
   }
 
-  async resolvePlaintextSize(key: string): Promise<number> {
-    const obj = await this.bucket.get(key);
-    if (!obj) return 0;
-    const dec = createDecryptStream(this.dataKey, key, obj.body);
-    await drain(dec.stream);
-    return dec.plaintextSize;
-  }
-
   async listChildren(path: string): Promise<ListEntry[]> {
     const prefix = this.dirPrefix(path);
     const fileObjs: R2Object[] = [];
     const dirNames = new Set<string>();
     let cursor: string | undefined;
     do {
-      const res = await this.bucket.list({ prefix, delimiter: "/", cursor, limit: 1000 });
+      const res = await this.bucket.list({ prefix, delimiter: "/", cursor, limit: 1000, include: ["customMetadata"] });
       for (const d of res.delimitedPrefixes ?? []) {
         const name = d.slice(prefix.length).replace(/\/$/, "");
         if (name !== "" && !name.includes("/")) dirNames.add(name);
@@ -141,10 +135,12 @@ export class Storage {
       cursor = res.truncated ? res.cursor : undefined;
     } while (cursor);
 
-    const nodes = await this.headForNodes(fileObjs);
     const entries: ListEntry[] = [];
     for (const name of dirNames) entries.push({ name, isDir: true });
-    for (const node of nodes) entries.push({ name: lastSegment(node.path), isDir: false, node });
+    for (const obj of fileObjs) {
+      const rel = obj.key.slice(this.prefix.length);
+      entries.push({ name: lastSegment(rel), isDir: false, node: this.toNode(obj, rel) });
+    }
     entries.sort((a, b) => {
       if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
       return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
@@ -155,33 +151,17 @@ export class Storage {
   /** 递归列出 path 下所有对象(不含 path 自身)。 */
   async listAll(path: string): Promise<StoredNode[]> {
     const prefix = this.dirPrefix(path);
-    const objs: R2Object[] = [];
+    const out: StoredNode[] = [];
     let cursor: string | undefined;
     do {
-      const res = await this.bucket.list({ prefix, cursor, limit: 1000 });
+      const res = await this.bucket.list({ prefix, cursor, limit: 1000, include: ["customMetadata"] });
       for (const obj of res.objects ?? []) {
         const rel = obj.key.slice(this.prefix.length);
         if (rel === "") continue;
-        objs.push(obj);
+        out.push(this.toNode(obj, rel));
       }
       cursor = res.truncated ? res.cursor : undefined;
     } while (cursor);
-    return this.headForNodes(objs);
-  }
-
-  /** list() 不含 customMetadata,需逐个 head 补齐元数据。 */
-  private async headForNodes(objs: R2Object[]): Promise<StoredNode[]> {
-    const out: StoredNode[] = [];
-    const BATCH = 50;
-    for (let i = 0; i < objs.length; i += BATCH) {
-      const slice = objs.slice(i, i + BATCH);
-      const heads = await Promise.all(slice.map((o) => this.bucket.head(o.key)));
-      for (const h of heads) {
-        if (!h) continue;
-        const path = h.key.slice(this.prefix.length);
-        out.push(this.toNode(h, path));
-      }
-    }
     return out;
   }
 
@@ -213,15 +193,18 @@ export class Storage {
 
     let plainLen: number;
     let source: ReadableStream<Uint8Array>;
+    let inlineMd5: string | undefined;
     if (sizeKnown) {
       plainLen = opts.size!;
       source = body;
     } else {
       const buf = await collectBytesWithinLimit(body, this.maxPutBytes);
       plainLen = buf.length;
+      inlineMd5 = md5Hex(buf);
       source = oneShotStream(buf);
     }
     cm[META_SIZE] = String(plainLen);
+    if (inlineMd5 !== undefined) cm[META_MD5] = inlineMd5;
 
     const enc = createEncryptStream(this.dataKey, key, this.chunkSize, plainLen, source);
     const out = fixed(enc.stream, ciphertextLength(plainLen, this.chunkSize));
@@ -229,7 +212,21 @@ export class Storage {
       customMetadata: cm,
       httpMetadata: opts.contentType ? { contentType: opts.contentType } : undefined,
     });
-    // R2 metadata is fixed when a streaming put starts; MD5 exists only after encryption consumes all plaintext.
+    if (inlineMd5 !== undefined) {
+      const httpMeta = opts.contentType ? { contentType: opts.contentType } : undefined;
+      return {
+        key,
+        path,
+        isDir: false,
+        size: plainLen,
+        etag: "",
+        md5: inlineMd5,
+        created,
+        mtime,
+        contentType: httpMeta?.contentType,
+      };
+    }
+    // 流式写(已知长度):R2 元数据在 put 开始时固定,MD5 只能在加密消费完明文后回填。
     await this.backfillMd5(key, await enc.md5);
     const obj = (await this.bucket.head(key))!;
     return this.toNode(obj, path);
@@ -265,23 +262,28 @@ export class Storage {
     await this.bucket.put(key, fixed(enc.stream, ciphertextLength(0, this.chunkSize)), { customMetadata: cm });
   }
 
+  /** 单次 get + 流式解密:解密流本身即完整性校验,任何篡改在流中抛 IntegrityError。 */
   async getFile(
     path: string,
     range?: PlainRange,
   ): Promise<{ stream: ReadableStream<Uint8Array>; size: number; node: StoredNode } | null> {
     const key = this.fileKey(path);
-    const obj = await this.bucket.get(key);
+    let obj = await this.bucket.get(key);
     if (!obj) return null;
     let node = this.toNode(obj, path);
     if (node.size < 0) {
-      node = { ...node, size: await this.resolvePlaintextSize(key) };
+      // 无大小元数据的旧对象(仅历史遗留):先整读确定明文大小,再取一次用于响应体。
+      const probe = createDecryptStream(this.dataKey, key, obj.body);
+      await drain(probe.stream);
+      const size = await probe.plaintextSize;
+      const again = await this.bucket.get(key);
+      if (!again || again.version !== obj.version || again.etag !== obj.etag) {
+        throw new WebDavError(409, "对象在读取期间发生变化");
+      }
+      obj = again;
+      node = { ...node, size };
     }
-    await this.verifyObject(key, obj);
-    const verified = await this.bucket.get(key);
-    if (!verified || verified.version !== obj.version || verified.etag !== obj.etag) {
-      throw new WebDavError(409, "对象在读取期间发生变化");
-    }
-    const dec = createDecryptStream(this.dataKey, key, verified.body, range);
+    const dec = createDecryptStream(this.dataKey, key, obj.body, range);
     return { stream: dec.stream, size: node.size, node };
   }
 
@@ -341,31 +343,28 @@ export class Storage {
   }
 
   private async copyDirRaw(srcPrefix: string, dstPrefix: string): Promise<void> {
-    const objs: R2Object[] = [];
     let cursor: string | undefined;
     do {
-      const res = await this.bucket.list({ prefix: srcPrefix, cursor, limit: 1000 });
-      objs.push(...(res.objects ?? []));
+      const res = await this.bucket.list({ prefix: srcPrefix, cursor, limit: 1000, include: ["customMetadata"] });
+      for (const obj of res.objects ?? []) {
+        const rel = obj.key.slice(srcPrefix.length);
+        const dstKey = `${dstPrefix}${rel}`;
+        const node = this.toNode(obj, obj.key.slice(this.prefix.length));
+        if (node.isDir) {
+          await this.putEmptyDirObject(dstKey, node.created, node.mtime);
+        } else {
+          await this.copyObjectRaw(obj.key, dstKey, node);
+        }
+      }
       cursor = res.truncated ? res.cursor : undefined;
     } while (cursor);
-
-    const nodes = await this.headForNodes(objs);
-    for (const node of nodes) {
-      const rel = node.key.slice(srcPrefix.length);
-      const dstKey = `${dstPrefix}${rel}`;
-      if (node.isDir) {
-        await this.putEmptyDirObject(dstKey, node.created, node.mtime);
-      } else {
-        await this.copyObjectRaw(node.key, dstKey, node);
-      }
-    }
   }
 
   private async copyObjectRaw(srcKey: string, dstKey: string, src: StoredNode): Promise<void> {
     const obj = await this.bucket.get(srcKey);
     if (!obj) throw new WebDavError(404, "源不存在");
-    const dec = createDecryptStream(this.dataKey, srcKey, obj.body);
     if (src.size >= 0) {
+      const dec = createDecryptStream(this.dataKey, srcKey, obj.body);
       const enc = createEncryptStream(this.dataKey, dstKey, this.chunkSize, src.size, dec.stream);
       await this.bucket.put(dstKey, fixed(enc.stream, ciphertextLength(src.size, this.chunkSize)), {
         customMetadata: {
@@ -373,24 +372,27 @@ export class Storage {
           [META_SIZE]: String(src.size),
           [META_CREATED]: src.created,
           [META_MTIME]: src.mtime,
+          ...(src.md5 ? { [META_MD5]: src.md5 } : {}),
         },
         httpMetadata: src.contentType ? { contentType: src.contentType } : undefined,
       });
-      await this.backfillMd5(dstKey, src.md5 ?? await enc.md5);
-    } else {
-      const buf = await collectBytes(dec.stream);
-      const enc = createEncryptStream(this.dataKey, dstKey, this.chunkSize, buf.length, oneShotStream(buf));
-      await this.bucket.put(dstKey, fixed(enc.stream, ciphertextLength(buf.length, this.chunkSize)), {
-        customMetadata: {
-          [META_TYPE]: "file",
-          [META_SIZE]: String(buf.length),
-          [META_CREATED]: src.created,
-          [META_MTIME]: src.mtime,
-        },
-        httpMetadata: src.contentType ? { contentType: src.contentType } : undefined,
-      });
-      await this.backfillMd5(dstKey, src.md5 ?? await enc.md5);
+      if (src.md5 === undefined) await this.backfillMd5(dstKey, await enc.md5);
+      return;
     }
+    // 无大小元数据的旧对象:先缓冲整个明文以确定大小,MD5 可内联,无需回填。
+    const dec = createDecryptStream(this.dataKey, srcKey, obj.body);
+    const buf = await collectBytes(dec.stream);
+    const enc = createEncryptStream(this.dataKey, dstKey, this.chunkSize, buf.length, oneShotStream(buf));
+    await this.bucket.put(dstKey, fixed(enc.stream, ciphertextLength(buf.length, this.chunkSize)), {
+      customMetadata: {
+        [META_TYPE]: "file",
+        [META_SIZE]: String(buf.length),
+        [META_CREATED]: src.created,
+        [META_MTIME]: src.mtime,
+        [META_MD5]: md5Hex(buf),
+      },
+      httpMetadata: src.contentType ? { contentType: src.contentType } : undefined,
+    });
   }
 
   private async backfillMd5(key: string, md5: string): Promise<void> {
@@ -400,11 +402,6 @@ export class Storage {
       customMetadata: { ...(obj.customMetadata ?? {}), [META_MD5]: md5 },
       httpMetadata: obj.httpMetadata ?? undefined,
     });
-  }
-
-  private async verifyObject(key: string, obj: R2ObjectBody): Promise<void> {
-    const dec = createDecryptStream(this.dataKey, key, obj.body);
-    await drain(dec.stream);
   }
 }
 

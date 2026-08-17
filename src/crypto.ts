@@ -124,6 +124,50 @@ export interface DecryptStreamResult {
   plaintextSize: Promise<number>;
 }
 
+/** 以追加方式累积字节片段,避免反复整段复制。 */
+class ByteAccumulator {
+  private parts: Uint8Array[] = [];
+  private total = 0;
+
+  get length(): number {
+    return this.total;
+  }
+
+  push(part: Uint8Array): void {
+    if (part.length === 0) return;
+    this.parts.push(part);
+    this.total += part.length;
+  }
+
+  /** 取出前 n 字节(不足时取全部);剩余部分保留。 */
+  take(n: number): Uint8Array {
+    const m = Math.min(n, this.total);
+    if (m === 0) return new Uint8Array(0);
+    if (this.parts.length === 1 && this.parts[0]!.length === m) {
+      const out = this.parts[0]!;
+      this.parts = [];
+      this.total = 0;
+      return out;
+    }
+    const out = new Uint8Array(m);
+    let off = 0;
+    while (off < m && this.parts.length > 0) {
+      const head = this.parts[0]!;
+      const used = Math.min(head.length, m - off);
+      out.set(used === head.length ? head : head.subarray(0, used), off);
+      off += used;
+      if (used === head.length) this.parts.shift();
+      else this.parts[0] = head.subarray(used);
+    }
+    this.total -= m;
+    return out;
+  }
+}
+
+export function md5Hex(data: Uint8Array): string {
+  return createHash("md5").update(data).digest("hex");
+}
+
 export function createEncryptStream(
   key: CryptoKey,
   objectKey: string,
@@ -143,7 +187,7 @@ export function createEncryptStream(
   header.set(baseNonce, 16);
 
   const hash = createHash("md5");
-  let acc: Uint8Array = new Uint8Array(0);
+  const acc = new ByteAccumulator();
   let chunkIndex = 0;
   let inputDone = false;
   let sentHeader = false;
@@ -170,7 +214,7 @@ export function createEncryptStream(
               inputDone = true;
               break;
             }
-            acc = concatBytes(acc, value);
+            acc.push(value);
             plaintextSize += value.length;
           }
           if (acc.length === 0) {
@@ -182,9 +226,8 @@ export function createEncryptStream(
             controller.close();
             return;
           }
-          const plain = acc.slice(0, chunkSize);
+          const plain = acc.take(chunkSize);
           hash.update(plain);
-          acc = acc.subarray(plain.length);
           const record = await encryptChunk(
             key,
             chunkIv(baseNonce, chunkIndex),
@@ -219,7 +262,7 @@ export function createEncryptStream(
 
 class BufferedReader {
   private reader: ReadableStreamDefaultReader<Uint8Array>;
-  private buf: Uint8Array = new Uint8Array(0);
+  private buf = new ByteAccumulator();
   private eof = false;
 
   constructor(source: ReadableStream<Uint8Array>) {
@@ -233,7 +276,7 @@ class BufferedReader {
       this.eof = true;
       return false;
     }
-    this.buf = concatBytes(this.buf, value);
+    this.buf.push(value);
     return true;
   }
 
@@ -242,11 +285,8 @@ class BufferedReader {
     while (this.buf.length < n && !this.eof) {
       if (!(await this.fill())) break;
     }
-    const m = Math.min(n, this.buf.length);
-    if (m === 0) return null;
-    const out = this.buf.slice(0, m);
-    this.buf = this.buf.subarray(m);
-    return out;
+    const out = this.buf.take(n);
+    return out.length > 0 ? out : null;
   }
 }
 

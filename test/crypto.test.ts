@@ -211,6 +211,51 @@ describe("加密:流式接口", () => {
     expectBytes(out, plain);
   });
 
+  it("createEncryptStream 以小滴输入跨多个分块仍正确", async () => {
+    const key = await makeKey();
+    const chunkSize = 1024;
+    const plain = randomBytes(chunkSize * 5 + 317);
+    let dripOffset = 0;
+    const drip = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        for (let i = 0; i < 3; i++) {
+          const offset = dripOffset;
+          if (offset >= plain.length) { controller.close(); return; }
+          const end = Math.min(offset + 7, plain.length);
+          dripOffset = end;
+          controller.enqueue(plain.slice(offset, end));
+        }
+      },
+    });
+    const enc = createEncryptStream(key, "drip", chunkSize, plain.length, drip);
+    const blob = await collect(enc.stream);
+    expect(await enc.plaintextSize).toBe(plain.length);
+    expect(await enc.md5).toBe(md5Hex(plain));
+    expectBytes(await decryptBlob(key, "drip", blob), plain);
+  });
+
+  it("createDecryptStream 以小滴密文输入仍正确(含区间)", async () => {
+    const key = await makeKey();
+    const chunkSize = 512;
+    const plain = randomBytes(chunkSize * 4 + 99);
+    const blob = await encryptBlob(key, "drip-dec", chunkSize, plain);
+    let dripOffset = 0;
+    const drip = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        for (let i = 0; i < 2; i++) {
+          const offset = dripOffset;
+          if (offset >= blob.length) { controller.close(); return; }
+          const end = Math.min(offset + 5, blob.length);
+          dripOffset = end;
+          controller.enqueue(blob.slice(offset, end));
+        }
+      },
+    });
+    const { stream } = createDecryptStream(key, "drip-dec", drip, { start: chunkSize + 10, end: chunkSize * 3 + 20 });
+    const got = await collect(stream);
+    expectBytes(got, plain.slice(chunkSize + 10, chunkSize * 3 + 20));
+  });
+
   it("createEncryptStream 计算明文 md5(跨分块)", async () => {
     const key = await makeKey();
     const chunkSize = 65536;

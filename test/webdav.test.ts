@@ -153,6 +153,30 @@ describe("文件读写", () => {
     expect(res.headers.get("ETag")).toBe(`"${md5Hex(new TextEncoder().encode(body))}"`);
   });
 
+  it("流式 PUT(带 Content-Length)后 ETag 同样可用", async () => {
+    const body = "streamed-etag-content";
+    await SELF.fetch(req("https://dav.example.com/s.txt", {
+      method: "PUT",
+      body,
+      headers: { "Content-Length": String(body.length) },
+    }));
+    const res = await SELF.fetch(req("https://dav.example.com/s.txt"));
+    expect(res.headers.get("ETag")).toBe(`"${md5Hex(new TextEncoder().encode(body))}"`);
+  });
+
+  it("GET 期间对象被篡改时流以错误终止", async () => {
+    const body = "integrity-check-content";
+    await SELF.fetch(req("https://dav.example.com/tamper.bin", { method: "PUT", body }));
+    const obj = await env.BACKUP_BUCKET.get(`${user.prefix}tamper.bin`);
+    const stored = new Uint8Array(await obj!.arrayBuffer());
+    stored[stored.length - 1]! ^= 0xff;
+    await env.BACKUP_BUCKET.put(`${user.prefix}tamper.bin`, stored, { customMetadata: obj!.customMetadata });
+
+    const res = await SELF.fetch(req("https://dav.example.com/tamper.bin"));
+    expect(res.status).toBe(200);
+    await expect(res.arrayBuffer()).rejects.toThrow();
+  });
+
   it("PROPFIND 的 getetag 是明文 MD5", async () => {
     const body = "propfind-etag";
     await SELF.fetch(req("https://dav.example.com/p.txt", { method: "PUT", body }));
