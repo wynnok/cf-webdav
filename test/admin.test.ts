@@ -24,13 +24,15 @@ describe("管理面", () => {
     expect(bad.status).toBe(401);
   });
 
-  it("浏览器省略 Origin 头时登录与表单操作不被拒绝，跨站 Origin 仍被拒绝", async () => {
+  it("浏览器省略或屏蔽 Origin 头时登录不被拒绝，跨站 Origin 仍被拒绝", async () => {
     const noOrigin = await SELF.fetch("https://dav.example.com/admin/login", { method: "POST", redirect: "manual", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ username: env.ADMIN_USERNAME, password: env.ADMIN_PASSWORD }) });
     expect(noOrigin.status).toBe(303);
-    const cookie = noOrigin.headers.get("Set-Cookie")!.split(";")[0]!;
+    const nulled = await SELF.fetch("https://dav.example.com/admin/login", { method: "POST", redirect: "manual", headers: { Origin: "null", "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ username: env.ADMIN_USERNAME, password: env.ADMIN_PASSWORD }) });
+    expect(nulled.status).toBe(303);
+    const cookie = nulled.headers.get("Set-Cookie")!.split(";")[0]!;
     const dashboard = await (await SELF.fetch("https://dav.example.com/admin", { headers: { Cookie: cookie } })).text();
     const csrf = dashboard.match(/name="csrf" value="([^"]+)"/)?.[1]!;
-    const create = await SELF.fetch("https://dav.example.com/admin/accounts", { method: "POST", redirect: "manual", headers: { Cookie: cookie, "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf, account: "no-origin", password: "new-password", passwordConfirmation: "new-password" }) });
+    const create = await SELF.fetch("https://dav.example.com/admin/accounts", { method: "POST", redirect: "manual", headers: { Cookie: cookie, Origin: "null", "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf, account: "no-origin", password: "new-password", passwordConfirmation: "new-password" }) });
     expect(create.status).toBe(303);
     const crossSite = await SELF.fetch("https://dav.example.com/admin/login", { method: "POST", redirect: "manual", headers: { Origin: "https://evil.example.net", "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ username: env.ADMIN_USERNAME, password: env.ADMIN_PASSWORD }) });
     expect(crossSite.status).toBe(403);

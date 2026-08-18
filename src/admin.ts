@@ -279,7 +279,7 @@ function storagePrefix(record: UserRecord): string { return record.storagePrefix
 function objectMetadata(object: R2Object, prefix: string): Metadata { const m = object.customMetadata ?? {}; return { path: object.key.slice(prefix.length), type: m.wdv_type ?? "file", size: m.wdv_size ?? "unknown", created: m.wdv_created ?? object.uploaded.toISOString(), mtime: m.wdv_mtime ?? object.uploaded.toISOString(), etag: m.wdv_md5 ?? object.etag }; }
 function validAccount(value: string): boolean { return /^[a-z0-9][a-z0-9._-]{0,62}$/.test(value); }
 function formatSize(raw: string): string { const size = Number(raw); if (!Number.isFinite(size) || size < 0) return raw; if (size === 0) return "0 B"; const units = ["B", "KiB", "MiB", "GiB", "TiB"]; const exponent = Math.min(Math.floor(Math.log(size) / Math.log(1024)), units.length - 1); if (exponent === 0) return `${size} B`; return `${(size / 1024 ** exponent).toFixed(1)} ${units[exponent]}`; }
-function sameOrigin(request: Request): boolean { const origin = request.headers.get("Origin"); return origin === null || origin === new URL(request.url).origin; }
+function sameOrigin(request: Request): boolean { const origin = request.headers.get("Origin"); return origin === null || origin === "null" || origin === new URL(request.url).origin; }
 function cookie(header: string | null, name: string): string | null { return header?.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${name}=`))?.slice(name.length + 1) ?? null; }
 function response(body: string, status: number): Response { return new Response(body, { status, headers: { "Cache-Control": "no-store" } }); }
 function page(body: string, status = 200): Response {
