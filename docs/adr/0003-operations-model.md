@@ -13,7 +13,7 @@
 - **认证迭代**:PBKDF2-SHA256 210k 次(可配置),靠 CF Rate Limiting 与强密码兜底暴力破解。
 - **滥用防护与审计**:Cloudflare Rate Limiting(账号级配置) + Workers Logs 审计(方法/账号/路径),不在代码内自建。
 - **管理面**:同一 Worker 在 `/admin` 提供服务端渲染的正式管理界面;只读浏览备份元数据,账号生命周期操作经同源 HTML 表单完成,不提供公开管理 API。
-- **管理员认证**:管理员凭据以 `ADMIN_USERNAME`、`ADMIN_PASSWORD`、`ADMIN_SESSION_SECRET` 三个 Worker Secret 配置。任一缺失时 `/admin` 返回 503。登录会话为浏览器关闭即失效、且最多四小时的签名 Cookie,写操作同时要求同源 Origin 与一次性 CSRF 令牌。
+- **管理员认证**:管理员凭据以 `ADMIN_USERNAME`、`ADMIN_PASSWORD`、`ADMIN_SESSION_SECRET` 三个 Worker Secret 配置。任一缺失时 `/admin` 返回 503。登录会话为浏览器关闭即失效、且最多四小时的签名 Cookie,写操作同时要求同源或缺失的 Origin 与一次性 CSRF 令牌(部分浏览器或代理会省略 Origin 头;跨站请求必带 Origin 被拒绝,配合 SameSite=Strict 会话 Cookie,不降低实际 CSRF 防护)。
 - **管理状态隔离**:管理员会话、CSRF 令牌和账号移除任务使用独立的 `ADMIN_KV`,不与账号记录或 WebDAV 锁共享;专用 `ADMIN_CSRF` Durable Object 原子消费一次性 CSRF 令牌,串行化账号移除与 WebDAV 写入,并领取每分钟唯一移除批次。
 - **账号移除**:危险移除先立即停用账号,再由 Cron 每分钟至多删除 500 个对象;过程可暂停或继续但不可取消或回滚,完成后才删除账号记录。运行或暂停的移除任务禁止该账号启用、停用和密码重置。
 - **账号移除故障与保留**:单个对象删除最多重试三次,仍失败则任务停止并保留失败对象和错误摘要。完成或失败任务的摘要、计数和错误信息保留 30 天,由 Cron 清理。
