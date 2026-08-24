@@ -107,7 +107,7 @@ _Avoid_: 取消、恢复
 _Avoid_: ACCOUNTS_KV、通用缓存
 
 **管理 CSRF 协调器 (Management CSRF coordinator / ADMIN_CSRF)**:
-专用 Durable Object,原子消费管理员会话关联的一次性 CSRF 令牌,并在账号移除期间阻止新的 WebDAV 写操作、等待既有写操作结束;同时原子领取每分钟唯一的账号移除批次。令牌数据仍由 ADMIN_KV 设置过期。
+专用 Durable Object,原子消费管理员会话关联的一次性 CSRF 令牌,并在账号移除期间阻止新的 WebDAV 写操作、等待既有写操作结束;同时原子领取每个调度窗口唯一的账号移除批次。令牌数据仍由 ADMIN_KV 设置过期。
 _Avoid_: WebDAV 锁、尽力而为的 KV 删除、并发移除批次
 
 **账号移除失败 (Account removal failure)**:

@@ -8,6 +8,9 @@ const SESSION_TTL = 4 * 60 * 60;
 const CSRF_TTL = 15 * 60;
 const BATCH_SIZE = 500;
 const RETENTION = 30 * 24 * 60 * 60;
+const PENDING_REMOVALS_KEY = "scheduler/removals-pending";
+const RETENTION_SWEEP_KEY = "scheduler/removals-retention";
+const REMOVAL_INDEX_VERSION_KEY = "scheduler/removals-index-v1";
 
 interface Session { id: string; expiresAt: number }
 interface RemovalJob {
@@ -125,21 +128,46 @@ export class Admin {
 
   async runScheduled(): Promise<void> {
     if (!this.configured()) return;
+    const now = Date.now();
+    const [pending, retentionRaw, indexVersion] = await Promise.all([
+      this.env.ADMIN_KV.get(PENDING_REMOVALS_KEY),
+      this.env.ADMIN_KV.get(RETENTION_SWEEP_KEY),
+      this.env.ADMIN_KV.get(REMOVAL_INDEX_VERSION_KEY),
+    ]);
+    const retentionDue = retentionRaw ? Number(retentionRaw) : NaN;
+    const retentionDueNow = Number.isFinite(retentionDue) && retentionDue <= now;
+    if (!pending && !retentionDueNow && indexVersion !== null) {
+      return;
+    }
     const scheduler = this.env.ADMIN_CSRF.get(this.env.ADMIN_CSRF.idFromName("removal-scheduler"));
     if ((await scheduler.fetch("https://admin/removal", { method: "PUT" })).status !== 204) return;
     try {
       let cursor: string | undefined;
+      let hasRunningJob = false;
+      let nextRetentionAt: number | undefined;
       let ranBatch = false;
       do {
-      const entries = await this.env.ADMIN_KV.list({ prefix: "removals/", cursor });
-      for (const entry of entries.keys) {
-        const job = await this.job(entry.name.slice(9));
-      if (!job) continue;
-        if (job.status === "running" && !ranBatch) { await this.removeBatch(job); ranBatch = true; }
-      if ((job.status === "completed" || job.status === "failed") && job.finishedAt && Date.now() - Date.parse(job.finishedAt) > RETENTION * 1000) await this.env.ADMIN_KV.delete(entry.name);
-      }
-      cursor = entries.list_complete ? undefined : entries.cursor;
+        const entries = await this.env.ADMIN_KV.list({ prefix: "removals/", cursor });
+        for (const entry of entries.keys) {
+          const account = entry.name.slice(9);
+          const job = await this.job(account);
+          if (!job) continue;
+          if (job.status === "running") {
+            if (!ranBatch) { await this.removeBatch(job); ranBatch = true; }
+            if (job.status === "running") hasRunningJob = true;
+          }
+          if (job.status === "completed" || job.status === "failed") {
+            const finishedAt = job.finishedAt ? Date.parse(job.finishedAt) : NaN;
+            if (Number.isFinite(finishedAt) && now - finishedAt >= RETENTION * 1000) await this.env.ADMIN_KV.delete(entry.name);
+            else if (Number.isFinite(finishedAt)) nextRetentionAt = Math.min(nextRetentionAt ?? Infinity, finishedAt + RETENTION * 1000);
+          }
+        }
+        cursor = entries.list_complete ? undefined : entries.cursor;
       } while (cursor);
+      if (indexVersion === null) await this.env.ADMIN_KV.put(REMOVAL_INDEX_VERSION_KEY, "1");
+      if (!hasRunningJob) await this.env.ADMIN_KV.delete(PENDING_REMOVALS_KEY);
+      if (nextRetentionAt === undefined) await this.env.ADMIN_KV.delete(RETENTION_SWEEP_KEY);
+      else if (String(nextRetentionAt) !== retentionRaw) await this.env.ADMIN_KV.put(RETENTION_SWEEP_KEY, String(nextRetentionAt));
     } finally {
       await scheduler.fetch("https://admin/removal", { method: "DELETE" });
     }
@@ -192,6 +220,7 @@ export class Admin {
       job.status = action === "pause" ? "paused" : "running";
       job.updatedAt = new Date().toISOString();
       await this.saveJob(job);
+      if (action === "resume") await this.env.ADMIN_KV.put(PENDING_REMOVALS_KEY, "1");
     } else if (job && ["running", "paused"].includes(job.status)) return redirect(`/admin?account=${encodeURIComponent(account)}&error=removal-active`);
     else if (action === "enable" || action === "disable") await this.env.ACCOUNTS_KV.put(`users/${account}`, JSON.stringify({ ...record, disabled: action === "disable" }));
     else if (action === "password") {
@@ -208,6 +237,7 @@ export class Admin {
       await gate.fetch("https://admin/removal", { method: "POST" });
       await this.env.ACCOUNTS_KV.put(`users/${account}`, JSON.stringify({ ...record, disabled: true }));
       await this.saveJob({ account, userId: record.id, storagePrefix: storagePrefix(record), status: "running", deleted: 0, retries: 0, updatedAt: now });
+      await this.env.ADMIN_KV.put(PENDING_REMOVALS_KEY, "1");
     } else return response("Not Found", 404);
     audit(`account.${action}`, account, "success");
     return redirect(`/admin?account=${encodeURIComponent(account)}`);
@@ -271,7 +301,9 @@ export class Admin {
   private async sign(payload: string): Promise<string> { const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(this.env.ADMIN_SESSION_SECRET!), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]); return `${payload}.${bytesToBase64(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload)))).replace(/[+/=]/g, "")}`; }
   private async record(account: string): Promise<UserRecord | null> { const raw = await this.env.ACCOUNTS_KV.get(`users/${account}`); if (!raw) return null; try { const record = JSON.parse(raw) as UserRecord; validateUserRecord(record); return record; } catch { return null; } }
   private async job(account: string): Promise<RemovalJob | null> { const raw = await this.env.ADMIN_KV.get(`removals/${account}`); return raw ? JSON.parse(raw) as RemovalJob : null; }
-  private saveJob(job: RemovalJob): Promise<void> { return this.env.ADMIN_KV.put(`removals/${job.account}`, JSON.stringify(job)); }
+  private async saveJob(job: RemovalJob): Promise<void> {
+    await this.env.ADMIN_KV.put(`removals/${job.account}`, JSON.stringify(job));
+  }
 }
 
 interface Metadata { path: string; type: string; size: string; created: string; mtime: string; etag: string }

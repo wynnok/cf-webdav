@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { env, SELF } from "cloudflare:test";
 import { Admin } from "../src/admin";
 import { validPbkdf2Iterations } from "../src/auth";
@@ -149,10 +149,46 @@ describe("管理面", () => {
     const { cookie, csrf } = await login();
     expect((await SELF.fetch("https://dav.example.com/admin/accounts/remove-me/remove", form(cookie, csrf, { confirmation: "remove-me" }))).status).toBe(303);
     expect(JSON.parse((await env.ACCOUNTS_KV.get("users/remove-me"))!).disabled).toBe(true);
+    expect(await env.ADMIN_KV.get("scheduler/removals-pending")).toBe("1");
     await new Admin(env, await importKeyFromBytes(hex(env.MASTER_KEY))).runScheduled();
     expect(await env.ACCOUNTS_KV.get("users/remove-me")).toBeNull();
     expect((await env.BACKUP_BUCKET.list({ prefix: user.prefix })).objects).toHaveLength(0);
+    expect(await env.ADMIN_KV.get("scheduler/removals-pending")).toBeNull();
   });
+
+  it("没有待处理移除任务时，定时任务不扫描管理 KV", async () => {
+    await env.ADMIN_KV.delete("scheduler/removals-pending");
+    await env.ADMIN_KV.put("scheduler/removals-index-v1", "1");
+    const list = vi.spyOn(env.ADMIN_KV, "list");
+
+    await new Admin(env, await importKeyFromBytes(hex(env.MASTER_KEY))).runScheduled();
+
+    expect(list).not.toHaveBeenCalled();
+    list.mockRestore();
+  });
+
+  it("暂停任务继续后重新进入定时任务索引", async () => {
+    const user = await seedUser("pause-resume", "correct-horse-battery-staple");
+    await env.BACKUP_BUCKET.put(`${user.prefix}one`, "ciphertext");
+    const { cookie, csrf } = await login();
+    await SELF.fetch("https://dav.example.com/admin/accounts/pause-resume/remove", form(cookie, csrf, { confirmation: "pause-resume" }));
+
+    const afterRemove = await SELF.fetch("https://dav.example.com/admin?account=pause-resume", { headers: { Cookie: cookie } });
+    const pauseCsrf = (await afterRemove.text()).match(/name="csrf" value="([^"]+)"/)?.[1];
+    expect(pauseCsrf).toBeTruthy();
+    const paused = await SELF.fetch("https://dav.example.com/admin/accounts/pause-resume/pause", form(cookie, pauseCsrf!, {}));
+    expect(paused.status).toBe(303);
+    await env.ADMIN_KV.delete("scheduler/removals-pending");
+    expect(await env.ADMIN_KV.get("scheduler/removals-pending")).toBeNull();
+
+    const dashboard = await SELF.fetch("https://dav.example.com/admin?account=pause-resume", { headers: { Cookie: cookie } });
+    const resumeCsrf = (await dashboard.text()).match(/name="csrf" value="([^"]+)"/)?.[1];
+    expect(resumeCsrf).toBeTruthy();
+    const resumed = await SELF.fetch("https://dav.example.com/admin/accounts/pause-resume/resume", form(cookie, resumeCsrf!, {}));
+    expect(resumed.status).toBe(303);
+    expect(await env.ADMIN_KV.get("scheduler/removals-pending")).toBe("1");
+  });
+
 });
 
 function hex(value: string): Uint8Array { const out = new Uint8Array(value.length / 2); for (let i = 0; i < out.length; i++) out[i] = Number.parseInt(value.slice(i * 2, i * 2 + 2), 16); return out; }
