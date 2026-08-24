@@ -135,7 +135,7 @@ Workers & Pages → cf-webdav → Settings → Variables and Secrets
 | --- | ---: | --- |
 | `CHUNK_SIZE_MB` | `4` | 加密分块大小，只能是 1 到 48 的整数 |
 | `PBKDF2_ITERATIONS` | `100000` | PBKDF2-SHA256 迭代次数（Cloudflare Workers 上限为 `100000`） |
-| `AUTH_CACHE_TTL_SECONDS` | `60` | 认证缓存 TTL |
+| `AUTH_CACHE_TTL_SECONDS` | `60` | 账号记录与成功认证结果的内存缓存 TTL；管理员变更会立即失效当前 Worker 实例缓存，外部直接修改 KV 最多延迟一个 TTL |
 | `PROPFIND_MAX_ENTRIES` | `5000` | 单次 PROPFIND 最大条目数 |
 | `LOCK_TIMEOUT_SECONDS` | `3600` | WebDAV 锁默认超时秒数 |
 | `MAX_PUT_BYTES` | 见下表 | 单次 PUT 应用层上限 |
@@ -234,7 +234,7 @@ MASTER_KEY='你的64位主密钥' \
 npm run user:create -- --disabled alice '高强度WebDAV密码'
 ```
 
-账号记录中的 `disabled: true` 会拒绝下一次认证请求。
+账号记录中的 `disabled: true` 会在缓存 TTL 内逐步生效；通过管理面停用账号会立即使当前 Worker 实例的认证缓存失效。
 
 ### 8．部署后验收
 

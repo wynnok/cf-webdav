@@ -63,11 +63,22 @@ function parseBasicAuth(authHeader: string): { username: string; password: strin
 }
 
 interface CacheEntry {
+  username: string;
   dataKey: CryptoKey;
   expires: number;
+  generation: number;
+}
+
+interface RecordCacheEntry {
+  record: UserRecord;
+  expires: number;
+  generation: number;
 }
 
 const authenticationCache = new Map<string, CacheEntry>();
+const recordCache = new Map<string, RecordCacheEntry>();
+const recordLoads = new Map<string, Promise<UserRecord | null>>();
+let cacheGeneration = 0;
 
 export class Auth {
   constructor(
@@ -77,20 +88,24 @@ export class Auth {
     private cacheTtlMs: number,
   ) {}
 
-  async authenticate(request: Request): Promise<AuthenticatedUser | null> {
+  async authenticate(request: Request, retryOnInvalidation = true): Promise<AuthenticatedUser | null> {
     const header = request.headers.get("Authorization");
     if (!header) return null;
     const creds = parseBasicAuth(header);
     if (!creds) return null;
 
     const username = normalizeUsername(creds.username);
+    const generation = cacheGeneration;
     const record = await this.loadRecord(username);
     if (!record || record.disabled) return null;
+    if (cacheGeneration !== generation && retryOnInvalidation) {
+      return this.authenticate(request, false);
+    }
 
     const cacheKey = await authenticationCacheKey(header, record);
     const now = Date.now();
     const cached = authenticationCache.get(cacheKey);
-    if (cached && cached.expires > now) {
+    if (cached && cached.generation === cacheGeneration && cached.expires > now) {
       return this.toUser(record, cached.dataKey, username);
     }
 
@@ -106,8 +121,13 @@ export class Auth {
     } catch {
       return null;
     }
+    if (cacheGeneration !== generation) {
+      return retryOnInvalidation ? this.authenticate(request, false) : null;
+    }
 
-    authenticationCache.set(cacheKey, { dataKey, expires: now + this.cacheTtlMs });
+    if (cacheGeneration === generation) {
+      authenticationCache.set(cacheKey, { username, dataKey, expires: now + this.cacheTtlMs, generation });
+    }
     if (authenticationCache.size > 1000) {
       const nowMs = Date.now();
       for (const [k, v] of authenticationCache) {
@@ -118,15 +138,34 @@ export class Auth {
   }
 
   async loadRecord(username: string): Promise<UserRecord | null> {
-    const raw = await this.kv.get(`users/${username}`);
-    if (!raw) return null;
-    try {
-      const record = JSON.parse(raw) as UserRecord;
-      validateUserRecord(record);
-      return record;
-    } catch {
-      return null;
-    }
+    const now = Date.now();
+    const generation = cacheGeneration;
+    const cached = recordCache.get(username);
+    if (cached && cached.generation === cacheGeneration && cached.expires > now) return cached.record;
+    if (cached) recordCache.delete(username);
+    const existing = recordLoads.get(username);
+    if (existing) return existing;
+    let load: Promise<UserRecord | null> = Promise.resolve(null);
+    load = (async () => {
+      try {
+        const raw = await this.kv.get(`users/${username}`);
+        if (!raw) return null;
+        let record: UserRecord;
+        try {
+          record = JSON.parse(raw) as UserRecord;
+          validateUserRecord(record);
+        } catch {
+          return null;
+        }
+        if (cacheGeneration === generation) recordCache.set(username, { record, expires: Date.now() + this.cacheTtlMs, generation });
+        pruneRecordCache();
+        return record;
+      } finally {
+        if (recordLoads.get(username) === load) recordLoads.delete(username);
+      }
+    })();
+    recordLoads.set(username, load);
+    return load;
   }
 
   private toUser(record: UserRecord, dataKey: CryptoKey, username: string): AuthenticatedUser {
@@ -136,6 +175,21 @@ export class Auth {
       prefix: record.storagePrefix,
       dataKey,
     };
+  }
+}
+
+export function invalidateAuthCache(_username: string): void {
+  cacheGeneration += 1;
+  recordCache.clear();
+  authenticationCache.clear();
+  recordLoads.clear();
+}
+
+function pruneRecordCache(): void {
+  if (recordCache.size <= 1000) return;
+  const now = Date.now();
+  for (const [key, entry] of recordCache) {
+    if (entry.generation !== cacheGeneration || entry.expires <= now) recordCache.delete(key);
   }
 }
 

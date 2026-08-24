@@ -28,7 +28,7 @@ cf-webdav 是一个运行在 Cloudflare Workers 上的 WebDAV 服务,R2 为存�
 
 - R2 custom metadata 保存明文元数据:`wdv_size`、`wdv_created`、`wdv_mtime`、`wdv_type`(file/dir)。(注意:R2 `list()` 不返回 customMetadata,PROPFIND 列表需对每个文件 `head()` 补齐元数据。)
 - 目录用尾部 `/` 的加密空对象作标记;纯虚目录(从未 MKCOL 但有子文件)按前缀推导。
-- 认证:Basic Auth;密码以 PBKDF2-SHA256 哈希(默认 210k 迭代)存 KV;成功认证结果按 `AUTH_CACHE_TTL_SECONDS`(默认 60s)缓存。
+- 认证:Basic Auth;密码以 PBKDF2-SHA256 哈希(默认 210k 迭代)存 KV;账号记录与成功认证结果按 `AUTH_CACHE_TTL_SECONDS`(默认 60s)在 Worker 内存缓存。管理员变更会立即失效当前 Worker 实例缓存,外部直接修改 KV 最多延迟一个 TTL。
 
 ## 安全属性
 

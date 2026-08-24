@@ -1,4 +1,4 @@
-import { makeUserRecord, normalizeUsername, pbkdf2Hash, type UserRecord, validateUserRecord } from "./auth";
+import { invalidateAuthCache, makeUserRecord, normalizeUsername, pbkdf2Hash, type UserRecord, validateUserRecord } from "./auth";
 import { generateDataKey, randomBytes, wrapKey } from "./crypto";
 import type { Env } from "./env";
 import { bytesToBase64, constantTimeEqual } from "./util";
@@ -206,6 +206,7 @@ export class Admin {
     const hash = await pbkdf2Hash(password, bytesToBase64(salt), iterations);
     const record = makeUserRecord(crypto.randomUUID(), account, salt, iterations, hash, await wrapKey(this.masterKey, generateDataKey()));
     await this.env.ACCOUNTS_KV.put(`users/${account}`, JSON.stringify(record));
+    invalidateAuthCache(account);
     audit("account.create", account, "success");
     return redirect(`/admin?created=${encodeURIComponent(account)}`);
   }
@@ -222,13 +223,17 @@ export class Admin {
       await this.saveJob(job);
       if (action === "resume") await this.env.ADMIN_KV.put(PENDING_REMOVALS_KEY, "1");
     } else if (job && ["running", "paused"].includes(job.status)) return redirect(`/admin?account=${encodeURIComponent(account)}&error=removal-active`);
-    else if (action === "enable" || action === "disable") await this.env.ACCOUNTS_KV.put(`users/${account}`, JSON.stringify({ ...record, disabled: action === "disable" }));
+    else if (action === "enable" || action === "disable") {
+      await this.env.ACCOUNTS_KV.put(`users/${account}`, JSON.stringify({ ...record, disabled: action === "disable" }));
+      invalidateAuthCache(account);
+    }
     else if (action === "password") {
       const form = await request.formData(); const password = String(form.get("password") ?? "");
       if (password.length < 8 || password !== String(form.get("passwordConfirmation") ?? "")) return redirect(`/admin?account=${encodeURIComponent(account)}&error=invalid-password`);
       const salt = randomBytes(16);
       const iterations = this.env.PBKDF2_ITERATIONS ?? 100000;
       await this.env.ACCOUNTS_KV.put(`users/${account}`, JSON.stringify({ ...record, iter: iterations, salt: bytesToBase64(salt), hash: await pbkdf2Hash(password, bytesToBase64(salt), iterations) }));
+      invalidateAuthCache(account);
     } else if (action === "remove") {
       const form = await request.formData();
       if (String(form.get("confirmation") ?? "") !== account) return redirect(`/admin?account=${encodeURIComponent(account)}&error=confirmation`);
@@ -236,6 +241,7 @@ export class Admin {
       const gate = this.env.ADMIN_CSRF.get(this.env.ADMIN_CSRF.idFromName(`account/${record.id}`));
       await gate.fetch("https://admin/removal", { method: "POST" });
       await this.env.ACCOUNTS_KV.put(`users/${account}`, JSON.stringify({ ...record, disabled: true }));
+      invalidateAuthCache(account);
       await this.saveJob({ account, userId: record.id, storagePrefix: storagePrefix(record), status: "running", deleted: 0, retries: 0, updatedAt: now });
       await this.env.ADMIN_KV.put(PENDING_REMOVALS_KEY, "1");
     } else return response("Not Found", 404);
@@ -259,7 +265,12 @@ export class Admin {
         }
       }
       job.retries = 0; job.failedKey = undefined; job.error = undefined; job.updatedAt = new Date().toISOString();
-      if (!listed.truncated) { await this.env.ACCOUNTS_KV.delete(`users/${job.account}`); job.status = "completed"; job.finishedAt = job.updatedAt; }
+      if (!listed.truncated) {
+        await this.env.ACCOUNTS_KV.delete(`users/${job.account}`);
+        invalidateAuthCache(job.account);
+        job.status = "completed";
+        job.finishedAt = job.updatedAt;
+      }
     } catch (error) {
       job.retries += 1; job.error = error instanceof Error ? error.message : "Unknown deletion error"; job.updatedAt = new Date().toISOString();
       if (job.retries >= 3) { job.status = "failed"; job.finishedAt = job.updatedAt; }

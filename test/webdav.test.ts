@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { env, SELF } from "cloudflare:test";
 import { basicAuth, seedUser } from "./helpers";
@@ -47,6 +47,29 @@ describe("认证", () => {
     expect(res.status).toBe(401);
   });
 
+  it("同一凭据在缓存 TTL 内不会重复读取账号 KV", async () => {
+    await seedUser("record-cache", "correct-horse-battery-staple");
+    const authHeader = basicAuth("record-cache", "correct-horse-battery-staple");
+    await SELF.fetch("https://dav.example.com/", { method: "OPTIONS", headers: { Authorization: authHeader } });
+    const get = vi.spyOn(env.ACCOUNTS_KV, "get");
+
+    expect((await SELF.fetch("https://dav.example.com/", { method: "OPTIONS", headers: { Authorization: authHeader } })).status).toBe(200);
+
+    expect(get).not.toHaveBeenCalled();
+    get.mockRestore();
+  });
+
+  it("冷缓存并发认证会合并为一次账号 KV 读取", async () => {
+    await seedUser("concurrent-cache", "correct-horse-battery-staple");
+    const get = vi.spyOn(env.ACCOUNTS_KV, "get");
+    const headers = { Authorization: basicAuth("concurrent-cache", "correct-horse-battery-staple") };
+    const responses = await Promise.all(Array.from({ length: 8 }, () => SELF.fetch("https://dav.example.com/", { method: "OPTIONS", headers })));
+
+    expect(responses.every((response) => response.status === 200)).toBe(true);
+    expect(get).toHaveBeenCalledTimes(1);
+    get.mockRestore();
+  });
+
   it("不存在的用户返回 401", async () => {
     const res = await SELF.fetch("https://dav.example.com/", {
       headers: { Authorization: basicAuth("nobody", "x") },
@@ -62,13 +85,6 @@ describe("认证", () => {
     expect(res.status).toBe(401);
   });
 
-  it("已缓存账号被停用后下一请求被拒绝", async () => {
-    expect((await SELF.fetch(req("https://dav.example.com/", { method: "OPTIONS" }))).status).toBe(200);
-    const raw = JSON.parse((await env.ACCOUNTS_KV.get("users/alice"))!) as Record<string, unknown>;
-    await env.ACCOUNTS_KV.put("users/alice", JSON.stringify({ ...raw, disabled: true }));
-    const res = await SELF.fetch(req("https://dav.example.com/", { method: "OPTIONS" }));
-    expect(res.status).toBe(401);
-  });
 });
 
 describe("文件读写", () => {

@@ -1,5 +1,5 @@
 import { env } from "cloudflare:test";
-import { pbkdf2Hash } from "../src/auth";
+import { invalidateAuthCache, pbkdf2Hash } from "../src/auth";
 import { generateDataKey, importKeyFromBytes, wrapKey, randomBytes } from "../src/crypto";
 import { bytesToBase64 } from "../src/util";
 
@@ -14,6 +14,7 @@ export async function seedUser(
   password: string,
   opts: { disabled?: boolean } = {},
 ): Promise<SeededUser> {
+  invalidateAuthCache(username);
   const master = await importKeyFromBytes(hex(env.MASTER_KEY));
   const salt = randomBytes(16);
   const hash = await pbkdf2Hash(password, bytesToBase64(salt), env.PBKDF2_ITERATIONS);

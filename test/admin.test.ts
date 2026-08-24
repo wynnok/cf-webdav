@@ -65,6 +65,34 @@ describe("管理面", () => {
     expect(reused.status).toBe(403);
   });
 
+  it("管理员停用账号会立即使认证缓存失效", async () => {
+    await seedUser("cache-disable", "correct-horse-battery-staple");
+    expect((await SELF.fetch("https://dav.example.com/", { method: "OPTIONS", headers: { Authorization: basicAuth("cache-disable", "correct-horse-battery-staple") } })).status).toBe(200);
+    const { cookie } = await login();
+    const dashboard = await SELF.fetch("https://dav.example.com/admin?account=cache-disable", { headers: { Cookie: cookie } });
+    const csrf = (await dashboard.text()).match(/name="csrf" value="([^"]+)"/)?.[1];
+    expect(csrf).toBeTruthy();
+    const disabled = await SELF.fetch("https://dav.example.com/admin/accounts/cache-disable/disable", form(cookie, csrf!, {}));
+    expect(disabled.status).toBe(303);
+    expect((await SELF.fetch("https://dav.example.com/", { method: "OPTIONS", headers: { Authorization: basicAuth("cache-disable", "correct-horse-battery-staple") } })).status).toBe(401);
+  });
+
+  it("账号记录重建后不会复用旧认证缓存", async () => {
+    await seedUser("recreated", "old-password");
+    const oldAuth = basicAuth("recreated", "old-password");
+    expect((await SELF.fetch("https://dav.example.com/", { method: "OPTIONS", headers: { Authorization: oldAuth } })).status).toBe(200);
+    await env.ACCOUNTS_KV.delete("users/recreated");
+
+    const { cookie } = await login();
+    const dashboard = await SELF.fetch("https://dav.example.com/admin", { headers: { Cookie: cookie } });
+    const csrf = (await dashboard.text()).match(/name="csrf" value="([^"]+)"/)?.[1];
+    expect(csrf).toBeTruthy();
+    const created = await SELF.fetch("https://dav.example.com/admin/accounts", form(cookie, csrf!, { account: "recreated", password: "new-password", passwordConfirmation: "new-password" }));
+    expect(created.status).toBe(303);
+    expect((await SELF.fetch("https://dav.example.com/", { method: "OPTIONS", headers: { Authorization: oldAuth } })).status).toBe(401);
+    expect((await SELF.fetch("https://dav.example.com/", { method: "OPTIONS", headers: { Authorization: basicAuth("recreated", "new-password") } })).status).toBe(200);
+  });
+
   it("概览页不读取账号元数据，只有选择账号时才显示", async () => {
     const user = await seedUser("on-demand", "correct-horse-battery-staple");
     await env.BACKUP_BUCKET.put(`${user.prefix}private.txt`, "encrypted-value", { customMetadata: { wdv_type: "file", wdv_size: "42" } });
@@ -154,6 +182,16 @@ describe("管理面", () => {
     expect(await env.ACCOUNTS_KV.get("users/remove-me")).toBeNull();
     expect((await env.BACKUP_BUCKET.list({ prefix: user.prefix })).objects).toHaveLength(0);
     expect(await env.ADMIN_KV.get("scheduler/removals-pending")).toBeNull();
+  });
+
+  it("账号移除完成后清理认证缓存", async () => {
+    const user = await seedUser("remove-cache", "correct-horse-battery-staple");
+    await env.BACKUP_BUCKET.put(`${user.prefix}one`, "ciphertext");
+    expect((await SELF.fetch("https://dav.example.com/", { method: "OPTIONS", headers: { Authorization: basicAuth("remove-cache", "correct-horse-battery-staple") } })).status).toBe(200);
+    const { cookie, csrf } = await login();
+    await SELF.fetch("https://dav.example.com/admin/accounts/remove-cache/remove", form(cookie, csrf, { confirmation: "remove-cache" }));
+    await new Admin(env, await importKeyFromBytes(hex(env.MASTER_KEY))).runScheduled();
+    expect((await SELF.fetch("https://dav.example.com/", { method: "OPTIONS", headers: { Authorization: basicAuth("remove-cache", "correct-horse-battery-staple") } })).status).toBe(401);
   });
 
   it("没有待处理移除任务时，定时任务不扫描管理 KV", async () => {
