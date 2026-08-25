@@ -62,6 +62,10 @@ function entityTag(node: Pick<StoredNode, "etag" | "md5">): string {
   return node.md5 ?? node.etag;
 }
 
+function isValidDate(value: string): boolean {
+  return value !== "" && !Number.isNaN(new Date(value).getTime());
+}
+
 function parsePropfindBody(xml: string): { type: PropfindType; props: string[] } {
   if (!xml.trim()) return { type: "allprop", props: [] };
   if (/allprop/i.test(xml)) return { type: "allprop", props: [] };
@@ -118,11 +122,11 @@ function propValue(name: string, node: DavNode): string | null {
     case "getcontentlength":
       return node.isDir ? null : String(node.size);
     case "getlastmodified":
-      return toHttpDate(new Date(node.mtime));
+      return isValidDate(node.mtime) ? toHttpDate(new Date(node.mtime)) : null;
     case "creationdate":
-      return node.created;
+      return isValidDate(node.created) ? node.created : null;
     case "getetag":
-      return `"${escapeXml(entityTag(node))}"`;
+      return entityTag(node) ? `"${escapeXml(entityTag(node))}"` : null;
     case "getcontenttype":
       return node.contentType ?? "application/octet-stream";
     case "displayname":
@@ -223,7 +227,7 @@ export class DavRouter {
       case "HEAD":
         return this.read(request, path, request.method === "HEAD");
       case "PUT":
-        return this.put(request, path);
+        return this.put(request, path, isDir);
       case "MKCOL":
         return this.mkcol(request, path);
       case "DELETE":
@@ -271,7 +275,7 @@ export class DavRouter {
         nodes.push(toDavNode(childNode, null));
       }
     } else if (depth === "infinity") {
-      const all = await this.storage.listAll(path);
+      const all = await this.storage.listAll(path, this.opts.propfindMaxEntries);
       for (const n of all) nodes.push(toDavNode(n, null));
     }
 
@@ -317,8 +321,9 @@ export class DavRouter {
     return new Response(isHead ? null : got.stream, { status: 200, headers });
   }
 
-  private async put(request: Request, path: string): Promise<Response> {
+  private async put(request: Request, path: string, isDir: boolean): Promise<Response> {
     if (path === "") throw new WebDavError(403, "不能写入根目录");
+    if (isDir) throw new WebDavError(409, "目标是一个目录");
     const heldTokens = parseIfHeader(request.headers.get("If"));
     await this.locks.assertWritable(path, heldTokens);
 

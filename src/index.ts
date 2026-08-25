@@ -20,7 +20,7 @@ export default {
       const masterKey = await importKeyFromBytes(masterKeyBytes);
       const path = new URL(request.url).pathname;
       if (path === "/admin" || path.startsWith("/admin/")) {
-        return new Admin(env, masterKey).dispatch(request);
+        return await new Admin(env, masterKey).dispatch(request);
       }
 
       const auth = new Auth(

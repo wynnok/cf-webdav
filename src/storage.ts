@@ -148,8 +148,8 @@ export class Storage {
     return entries;
   }
 
-  /** 递归列出 path 下所有对象(不含 path 自身)。 */
-  async listAll(path: string): Promise<StoredNode[]> {
+  /** 递归列出 path 下所有对象(不含 path 自身)。超过 maxEntries 时抛 507,避免无界累积。 */
+  async listAll(path: string, maxEntries = Number.POSITIVE_INFINITY): Promise<StoredNode[]> {
     const prefix = this.dirPrefix(path);
     const out: StoredNode[] = [];
     let cursor: string | undefined;
@@ -159,6 +159,7 @@ export class Storage {
         const rel = obj.key.slice(this.prefix.length);
         if (rel === "") continue;
         out.push(this.toNode(obj, rel));
+        if (out.length >= maxEntries) throw new WebDavError(507, "目录列表过大");
       }
       cursor = res.truncated ? res.cursor : undefined;
     } while (cursor);

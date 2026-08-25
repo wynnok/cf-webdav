@@ -24,6 +24,16 @@ describe("管理面", () => {
     expect(bad.status).toBe(401);
   });
 
+  it("管理面表单解析失败时返回 500 而非未处理异常", async () => {
+    const res = await SELF.fetch("https://dav.example.com/admin/login", {
+      method: "POST",
+      redirect: "manual",
+      headers: { Origin: "https://dav.example.com", "Content-Type": "application/json" },
+      body: "not-form-data",
+    });
+    expect(res.status).toBe(500);
+  });
+
   it("浏览器省略或屏蔽 Origin 头时登录不被拒绝，跨站 Origin 仍被拒绝", async () => {
     const noOrigin = await SELF.fetch("https://dav.example.com/admin/login", { method: "POST", redirect: "manual", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ username: env.ADMIN_USERNAME, password: env.ADMIN_PASSWORD }) });
     expect(noOrigin.status).toBe(303);

@@ -115,6 +115,13 @@ describe("文件读写", () => {
     expect(res.status).toBe(412);
   });
 
+  it("PUT 到以斜杠结尾的集合路径被拒绝且不写入对象", async () => {
+    const res = await SELF.fetch(req("https://dav.example.com/collection/", { method: "PUT", body: "x" }));
+    expect(res.status).toBe(409);
+    expect(await env.BACKUP_BUCKET.head(`${user.prefix}collection`)).toBeNull();
+    expect(await env.BACKUP_BUCKET.head(`${user.prefix}collection/`)).toBeNull();
+  });
+
   it("已知长度超过部署上限时 PUT 返回 413 且不写入 R2", async () => {
     const body = new Uint8Array(env.MAX_PUT_BYTES + 1);
     const res = await SELF.fetch(req("https://dav.example.com/too-large.bin", { method: "PUT", body }));
@@ -271,6 +278,31 @@ describe("目录操作", () => {
     );
     expect(res.status).toBe(207);
     expect(await res.text()).toContain("<D:href>/auto/created.txt</D:href>");
+  });
+
+  it("深度 1 列出的目录不输出无效日期或空 ETag", async () => {
+    await SELF.fetch(req("https://dav.example.com/empty/", { method: "MKCOL" }));
+    const res = await SELF.fetch(
+      req("https://dav.example.com/", { method: "PROPFIND", headers: { Depth: "1" } }),
+    );
+    expect(res.status).toBe(207);
+    const xml = await res.text();
+    expect(xml).toContain("<D:href>/empty/</D:href>");
+    expect(xml).not.toContain("Invalid Date");
+    expect(xml).not.toMatch(/<D:getetag>""<\/D:getetag>/);
+    expect(xml).not.toMatch(/<D:creationdate><\/D:creationdate>/);
+  });
+
+  it("Depth: infinity 的 PROPFIND 在累积阶段即拒绝过大的目录树", async () => {
+    for (let i = 0; i < env.PROPFIND_MAX_ENTRIES + 5; i++) {
+      await env.BACKUP_BUCKET.put(`${user.prefix}huge/${String(i).padStart(4, "0")}`, "x", {
+        customMetadata: { wdv_type: "file", wdv_size: "1" },
+      });
+    }
+    const res = await SELF.fetch(
+      req("https://dav.example.com/huge/", { method: "PROPFIND", headers: { Depth: "infinity" } }),
+    );
+    expect(res.status).toBe(507);
   });
 });
 
