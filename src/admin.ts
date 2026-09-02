@@ -11,6 +11,8 @@ const RETENTION = 30 * 24 * 60 * 60;
 const PENDING_REMOVALS_KEY = "scheduler/removals-pending";
 const RETENTION_SWEEP_KEY = "scheduler/removals-retention";
 const REMOVAL_INDEX_VERSION_KEY = "scheduler/removals-index-v1";
+/** DO 位置提示:与 R2 推荐的 APAC Location Hint 同区,减少跨区往返;仅对 DO 首次创建生效。 */
+const DO_LOCATION: DurableObjectLocationHint = "apac";
 
 interface Session { id: string; expiresAt: number }
 interface RemovalJob {
@@ -95,13 +97,13 @@ export class AdminCsrf implements DurableObject {
 }
 
 export async function acquireAccountMutation(env: Env, accountId: string): Promise<string | null> {
-  const stub = env.ADMIN_CSRF.get(env.ADMIN_CSRF.idFromName(`account/${accountId}`));
+  const stub = env.ADMIN_CSRF.get(env.ADMIN_CSRF.idFromName(`account/${accountId}`), { locationHint: DO_LOCATION });
   const response = await stub.fetch("https://admin/mutation", { method: "POST" });
   return response.status === 200 ? response.text() : null;
 }
 
 export async function releaseAccountMutation(env: Env, accountId: string, lease: string): Promise<void> {
-  const stub = env.ADMIN_CSRF.get(env.ADMIN_CSRF.idFromName(`account/${accountId}`));
+  const stub = env.ADMIN_CSRF.get(env.ADMIN_CSRF.idFromName(`account/${accountId}`), { locationHint: DO_LOCATION });
   await stub.fetch(`https://admin/mutation?lease=${encodeURIComponent(lease)}`, { method: "DELETE" });
 }
 
@@ -139,7 +141,7 @@ export class Admin {
     if (!pending && !retentionDueNow && indexVersion !== null) {
       return;
     }
-    const scheduler = this.env.ADMIN_CSRF.get(this.env.ADMIN_CSRF.idFromName("removal-scheduler"));
+    const scheduler = this.env.ADMIN_CSRF.get(this.env.ADMIN_CSRF.idFromName("removal-scheduler"), { locationHint: DO_LOCATION });
     if ((await scheduler.fetch("https://admin/removal", { method: "PUT" })).status !== 204) return;
     try {
       let cursor: string | undefined;
@@ -238,7 +240,7 @@ export class Admin {
       const form = await request.formData();
       if (String(form.get("confirmation") ?? "") !== account) return redirect(`/admin?account=${encodeURIComponent(account)}&error=confirmation`);
       const now = new Date().toISOString();
-      const gate = this.env.ADMIN_CSRF.get(this.env.ADMIN_CSRF.idFromName(`account/${record.id}`));
+      const gate = this.env.ADMIN_CSRF.get(this.env.ADMIN_CSRF.idFromName(`account/${record.id}`), { locationHint: DO_LOCATION });
       await gate.fetch("https://admin/removal", { method: "POST" });
       await this.env.ACCOUNTS_KV.put(`users/${account}`, JSON.stringify({ ...record, disabled: true }));
       invalidateAuthCache(account);
@@ -251,7 +253,7 @@ export class Admin {
 
   private async removeBatch(job: RemovalJob): Promise<void> {
     try {
-      const gate = this.env.ADMIN_CSRF.get(this.env.ADMIN_CSRF.idFromName(`account/${job.userId}`));
+      const gate = this.env.ADMIN_CSRF.get(this.env.ADMIN_CSRF.idFromName(`account/${job.userId}`), { locationHint: DO_LOCATION });
       const activity = await (await gate.fetch("https://admin/removal")).json<{ active: number }>();
       if (activity.active > 0) return;
       const listed = await this.env.BACKUP_BUCKET.list({ prefix: job.storagePrefix, limit: BATCH_SIZE });
@@ -302,12 +304,12 @@ export class Admin {
     const session = await this.session(request); if (!session) return redirect("/admin/login");
     if (!sameOrigin(request)) return response("Forbidden", 403);
     const token = String((await request.clone().formData()).get("csrf") ?? "");
-    const stub = this.env.ADMIN_CSRF.get(this.env.ADMIN_CSRF.idFromName(session.id));
+    const stub = this.env.ADMIN_CSRF.get(this.env.ADMIN_CSRF.idFromName(session.id), { locationHint: DO_LOCATION });
     if ((await stub.fetch(`https://csrf/token?token=${encodeURIComponent(token)}`, { method: "DELETE" })).status !== 204) return response("Forbidden", 403);
     if (!await this.env.ADMIN_KV.get(`csrf/${session.id}/${token}`)) return response("Forbidden", 403);
     await this.env.ADMIN_KV.delete(`csrf/${session.id}/${token}`); return action();
   }
-  private async csrf(session: Session): Promise<string> { const token = bytesToBase64(randomBytes(32)).replace(/[+/=]/g, ""); await this.env.ADMIN_KV.put(`csrf/${session.id}/${token}`, "1", { expirationTtl: CSRF_TTL }); const stub = this.env.ADMIN_CSRF.get(this.env.ADMIN_CSRF.idFromName(session.id)); await stub.fetch(`https://csrf/token?token=${encodeURIComponent(token)}&expiresAt=${Date.now() + CSRF_TTL * 1000}`, { method: "PUT" }); return token; }
+  private async csrf(session: Session): Promise<string> { const token = bytesToBase64(randomBytes(32)).replace(/[+/=]/g, ""); await this.env.ADMIN_KV.put(`csrf/${session.id}/${token}`, "1", { expirationTtl: CSRF_TTL }); const stub = this.env.ADMIN_CSRF.get(this.env.ADMIN_CSRF.idFromName(session.id), { locationHint: DO_LOCATION }); await stub.fetch(`https://csrf/token?token=${encodeURIComponent(token)}&expiresAt=${Date.now() + CSRF_TTL * 1000}`, { method: "PUT" }); return token; }
   private async session(request: Request): Promise<Session | null> { const raw = cookie(request.headers.get("Cookie"), COOKIE); if (!raw) return null; const dot = raw.lastIndexOf("."); const payload = raw.slice(0, dot); if (dot < 1 || !constantTimeEqual(await this.sign(payload), raw)) return null; const [id, expiry] = payload.split("."); const expiresAt = Number(expiry); return id && expiresAt > Date.now() && await this.env.ADMIN_KV.get(`sessions/${id}`) ? { id, expiresAt } : null; }
   private async sign(payload: string): Promise<string> { const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(this.env.ADMIN_SESSION_SECRET!), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]); return `${payload}.${bytesToBase64(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload)))).replace(/[+/=]/g, "")}`; }
   private async record(account: string): Promise<UserRecord | null> { const raw = await this.env.ACCOUNTS_KV.get(`users/${account}`); if (!raw) return null; try { const record = JSON.parse(raw) as UserRecord; validateUserRecord(record); return record; } catch { return null; } }

@@ -24,6 +24,7 @@ export default defineWorkersConfig({
             AUTH_CACHE_TTL_SECONDS: 60,
             PROPFIND_MAX_ENTRIES: 100,
             MAX_PUT_BYTES: 64 * 1024,
+            INLINE_MD5_MAX_BYTES: 16,
           },
         },
       },

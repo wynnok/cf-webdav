@@ -14,5 +14,6 @@ declare module "cloudflare:test" {
     AUTH_CACHE_TTL_SECONDS: number;
     PROPFIND_MAX_ENTRIES: number;
     MAX_PUT_BYTES: number;
+    INLINE_MD5_MAX_BYTES: number;
   }
 }

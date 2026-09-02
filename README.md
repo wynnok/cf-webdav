@@ -138,6 +138,7 @@ Workers & Pages → cf-webdav → Settings → Variables and Secrets
 | `AUTH_CACHE_TTL_SECONDS` | `60` | 账号记录与成功认证结果的内存缓存 TTL；管理员变更会立即失效当前 Worker 实例缓存，外部直接修改 KV 最多延迟一个 TTL |
 | `PROPFIND_MAX_ENTRIES` | `5000` | 单次 PROPFIND 最大条目数 |
 | `LOCK_TIMEOUT_SECONDS` | `3600` | WebDAV 锁默认超时秒数 |
+| `INLINE_MD5_MAX_BYTES` | `33554432`（32 MiB） | 带 `Content-Length` 的 PUT 不超过该大小时先缓冲明文、内联写入 MD5，只写一次 R2；超过则流式上传后回填 MD5（额外一次全量读写） |
 | `MAX_PUT_BYTES` | 见下表 | 单次 PUT 应用层上限 |
 
 `MAX_PUT_BYTES` 必须不大于 Cloudflare 账号请求体上限：
@@ -343,7 +344,7 @@ rclone purge cfwebdav:backup-test
 
 - rclone 的 WebDAV `vendor = other` 通常整文件 PUT。超过 Cloudflare 请求体限制的单个文件需要在源端分割、提高账户计划，或改用按块上传的备份工具。
 - 无 `Content-Length` 的 PUT 会在 Worker 中按 `MAX_PUT_BYTES` 计数并拒绝超限请求。
-- Worker 内存上限为 128 MiB；默认 `CHUNK_SIZE_MB = 4` 是安全折中。
+- Worker 内存上限为 128 MiB；默认 `CHUNK_SIZE_MB = 4` 是安全折中。`INLINE_MD5_MAX_BYTES` 默认 32 MiB，配置上限 48 MiB（缓冲拼接峰值约为其两倍，需在内存预算内）。
 - `LOCK` 是独占语义；`shared` 按独占处理。
 - KV 锁是最终一致的，因此同一账号的备份任务应由客户端错开，不要并发写同一路径。
 

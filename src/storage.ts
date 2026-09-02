@@ -57,6 +57,7 @@ export class Storage {
     private dataKey: CryptoKey,
     private chunkSize: number,
     private maxPutBytes: number,
+    private inlineMd5MaxBytes: number,
   ) {}
 
   private fileKey(path: string): string {
@@ -185,6 +186,8 @@ export class Storage {
     const mtime = opts.mtime ?? created ?? nowIso();
     created = created ?? nowIso();
     const sizeKnown = opts.size !== undefined;
+    // 已知长度且不超过内联上限时缓冲明文内联计算 MD5,避免回填导致的全量重读重写。
+    const streamLarge = sizeKnown && opts.size! > this.inlineMd5MaxBytes;
     const cm: Record<string, string> = {
       [META_TYPE]: "file",
       [META_SIZE]: "0",
@@ -195,12 +198,16 @@ export class Storage {
     let plainLen: number;
     let source: ReadableStream<Uint8Array>;
     let inlineMd5: string | undefined;
-    if (sizeKnown) {
+    if (streamLarge) {
       plainLen = opts.size!;
       source = body;
     } else {
-      const buf = await collectBytesWithinLimit(body, this.maxPutBytes);
-      plainLen = buf.length;
+      const buf = await collectBytesWithinLimit(
+        body,
+        sizeKnown ? opts.size! : this.maxPutBytes,
+        sizeKnown ? "声明的 Content-Length" : "部署上限",
+      );
+      plainLen = sizeKnown ? opts.size! : buf.length;
       inlineMd5 = md5Hex(buf);
       source = oneShotStream(buf);
     }
@@ -406,7 +413,11 @@ export class Storage {
   }
 }
 
-async function collectBytesWithinLimit(stream: ReadableStream<Uint8Array>, limit: number): Promise<Uint8Array> {
+async function collectBytesWithinLimit(
+  stream: ReadableStream<Uint8Array>,
+  limit: number,
+  reason: string,
+): Promise<Uint8Array> {
   const reader = stream.getReader();
   const parts: Uint8Array[] = [];
   let size = 0;
@@ -416,7 +427,7 @@ async function collectBytesWithinLimit(stream: ReadableStream<Uint8Array>, limit
     size += value.length;
     if (size > limit) {
       await reader.cancel();
-      throw new WebDavError(413, `上传对象超过部署上限(${limit} bytes)`);
+      throw new WebDavError(413, `上传对象超过${reason}(${limit} bytes)`);
     }
     parts.push(value);
   }

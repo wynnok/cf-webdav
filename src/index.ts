@@ -49,7 +49,13 @@ export default {
       }
       const chunkSize = chunkSizeMb * 1024 * 1024;
       const maxPutBytes = env.MAX_PUT_BYTES ?? 500 * 1024 * 1024;
-      const storage = new Storage(env.BACKUP_BUCKET, user.prefix, user.dataKey, chunkSize, maxPutBytes);
+      // 带 Content-Length 的 PUT 在该上限内缓冲明文内联计算 MD5,避免回填导致的全量重传。
+      // 默认 32 MiB:拼接峰值约为 2× 大小,需在 128 MiB 内存预算内。
+      const inlineMd5MaxBytes = env.INLINE_MD5_MAX_BYTES ?? 32 * 1024 * 1024;
+      if (!Number.isInteger(inlineMd5MaxBytes) || inlineMd5MaxBytes < 0 || inlineMd5MaxBytes > 48 * 1024 * 1024) {
+        throw new Error("INLINE_MD5_MAX_BYTES 必须是 0 到 50331648 的整数");
+      }
+      const storage = new Storage(env.BACKUP_BUCKET, user.prefix, user.dataKey, chunkSize, maxPutBytes, inlineMd5MaxBytes);
       const locks = new LockManager(
         env.LOCKS_KV,
         user.userId,

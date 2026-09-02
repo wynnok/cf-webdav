@@ -187,6 +187,23 @@ describe("文件读写", () => {
     expect(res.headers.get("ETag")).toBe(`"${md5Hex(new TextEncoder().encode(body))}"`);
   });
 
+  it("不超过内联上限的带 Content-Length PUT 只写一次 R2 且元数据含 MD5", async () => {
+    const body = "inline-md5";
+    const digest = md5Hex(new TextEncoder().encode(body));
+    const put = vi.spyOn(env.BACKUP_BUCKET, "put");
+    const res = await SELF.fetch(req("https://dav.example.com/inline.bin", {
+      method: "PUT",
+      body,
+      headers: { "Content-Length": String(body.length) },
+    }));
+    expect(res.status).toBe(201);
+    expect(res.headers.get("ETag")).toBe(`"${digest}"`);
+    expect(put).toHaveBeenCalledTimes(1);
+    put.mockRestore();
+    const obj = await env.BACKUP_BUCKET.head(`${user.prefix}inline.bin`);
+    expect(obj!.customMetadata!.wdv_md5).toBe(digest);
+  });
+
   it("GET 期间对象被篡改时流以错误终止", async () => {
     const body = "integrity-check-content";
     await SELF.fetch(req("https://dav.example.com/tamper.bin", { method: "PUT", body }));

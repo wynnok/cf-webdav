@@ -7,6 +7,9 @@
   "observability": {
     "enabled": true
   },
+  "placement": {
+    "mode": "smart"
+  },
   "r2_buckets": [
     {
       "binding": "BACKUP_BUCKET",
@@ -50,6 +53,7 @@
     "AUTH_CACHE_TTL_SECONDS": 60,
     "PROPFIND_MAX_ENTRIES": 5000,
     "LOCK_TIMEOUT_SECONDS": 3600,
+    "INLINE_MD5_MAX_BYTES": 33554432,
     "MAX_PUT_BYTES": 524288000
   }
 }

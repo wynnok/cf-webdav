@@ -16,4 +16,6 @@ export interface Env {
   LOCK_TIMEOUT_SECONDS?: number;
   /** 部署所在 Cloudflare 账号允许的最大 HTTP 请求体字节数。 */
   MAX_PUT_BYTES?: number;
+  /** 带 Content-Length 的 PUT 在该大小内缓冲明文内联写入 MD5;超过则流式上传后回填。 */
+  INLINE_MD5_MAX_BYTES?: number;
 }
